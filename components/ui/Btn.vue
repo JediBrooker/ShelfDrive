@@ -1,5 +1,5 @@
 <template>
-  <nuxt-link v-if="to" :to="to" class="btn outline-none rounded-md shadow-md relative border border-border text-center" :disabled="disabled || loading" :class="classList">
+  <nuxt-link v-if="to" :to="to" class="btn outline-none rounded-lg shadow-md relative border border-border text-center font-semibold" :disabled="disabled || loading" :class="classList">
     <slot />
     <div v-if="loading" class="text-fg absolute top-0 left-0 w-full h-full flex items-center justify-center">
       <svg class="animate-spin" style="width: 24px; height: 24px" viewBox="0 0 24 24">
@@ -7,7 +7,7 @@
       </svg>
     </div>
   </nuxt-link>
-  <button v-else class="btn outline-none rounded-md shadow-md relative border border-border" :disabled="disabled || loading" :type="type" :class="classList" @mousedown.prevent @click="click">
+  <button v-else class="btn outline-none rounded-lg shadow-md relative border border-border font-semibold" :disabled="disabled || loading" :type="type" :class="classList" @mousedown.prevent @click="click">
     <slot />
     <div v-if="loading" class="text-fg absolute top-0 left-0 w-full h-full flex items-center justify-center">
       <svg class="animate-spin" style="width: 24px; height: 24px" viewBox="0 0 24 24">
@@ -79,7 +79,7 @@ export default {
 .btn::before {
   content: '';
   position: absolute;
-  border-radius: 6px;
+  border-radius: 8px;
   top: 0;
   left: 0;
   width: 100%;
@@ -89,6 +89,15 @@ export default {
 }
 .btn:hover:not(:disabled)::before {
   background-color: rgba(255, 255, 255, 0.1);
+}
+.btn {
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+.btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+.btn:active:not(:disabled) {
+  transform: translateY(0);
 }
 button:disabled::before {
   background-color: rgba(0, 0, 0, 0.2);

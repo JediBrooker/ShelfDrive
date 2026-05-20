@@ -69,19 +69,19 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
   }
 
   override fun onSkipToPrevious() {
-    playerNotificationService.skipToPrevious()
+    playerNotificationService.seekBackwardFromMediaSession()
   }
 
   override fun onSkipToNext() {
-    playerNotificationService.skipToNext()
+    playerNotificationService.seekForwardFromMediaSession()
   }
 
   override fun onFastForward() {
-    playerNotificationService.jumpForward()
+    playerNotificationService.seekForwardFromMediaSession()
   }
 
   override fun onRewind() {
-    playerNotificationService.jumpBackward()
+    playerNotificationService.seekBackwardFromMediaSession()
   }
 
   override fun onSeekTo(pos: Long) {
@@ -193,11 +193,11 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
           }
           KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
             Log.d(tag, "handleCallMediaButton: Media Fast Forward")
-            playerNotificationService.jumpForward()
+            playerNotificationService.seekForwardFromMediaSession()
           }
           KeyEvent.KEYCODE_MEDIA_REWIND -> {
             Log.d(tag, "handleCallMediaButton: Media Rewind")
-            playerNotificationService.jumpBackward()
+            playerNotificationService.seekBackwardFromMediaSession()
           }
         }
       }
@@ -228,10 +228,10 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
             handleMediaButtonClickCount()
           }
           KeyEvent.KEYCODE_MEDIA_NEXT -> {
-            playerNotificationService.jumpForward()
+            playerNotificationService.seekForwardFromMediaSession()
           }
           KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-            playerNotificationService.jumpBackward()
+            playerNotificationService.seekBackwardFromMediaSession()
           }
           KeyEvent.KEYCODE_MEDIA_STOP -> {
             playerNotificationService.closePlayback()
@@ -276,10 +276,10 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
     super.onCustomAction(action, extras)
 
     when (action) {
-      CUSTOM_ACTION_JUMP_FORWARD -> onFastForward()
-      CUSTOM_ACTION_JUMP_BACKWARD -> onRewind()
-      CUSTOM_ACTION_SKIP_FORWARD -> onSkipToNext()
-      CUSTOM_ACTION_SKIP_BACKWARD -> onSkipToPrevious()
+      CUSTOM_ACTION_JUMP_FORWARD -> playerNotificationService.jumpForward()
+      CUSTOM_ACTION_JUMP_BACKWARD -> playerNotificationService.jumpBackward()
+      CUSTOM_ACTION_SKIP_FORWARD -> playerNotificationService.skipToNext()
+      CUSTOM_ACTION_SKIP_BACKWARD -> playerNotificationService.skipToPrevious()
       CUSTOM_ACTION_CHANGE_SPEED -> onChangeSpeed()
     }
   }

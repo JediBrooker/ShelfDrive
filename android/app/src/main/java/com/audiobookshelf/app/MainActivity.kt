@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -59,6 +60,7 @@ class MainActivity : BridgeActivity() {
     // Update the margins to handle edge-to-edge enforced in SDK 35
     // See: https://developer.android.com/develop/ui/views/layout/edge-to-edge
     val webView: WebView = findViewById(R.id.webview)
+    configureWebViewRendering(webView)
     webView.setOnApplyWindowInsetsListener { v, insets ->
       val (left, top, right, bottom) = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
         val sysInsets = insets.getInsets(WindowInsets.Type.systemBars())
@@ -104,6 +106,21 @@ class MainActivity : BridgeActivity() {
         PERMISSIONS_ALL,
         REQUEST_PERMISSIONS)
     }
+  }
+
+  override fun onResume() {
+    super.onResume()
+    val webView: WebView? = findViewById(R.id.webview)
+    webView?.let { view ->
+      view.post {
+        view.requestLayout()
+        view.invalidate()
+      }
+    }
+  }
+
+  private fun configureWebViewRendering(webView: WebView) {
+    webView.setBackgroundColor(Color.rgb(17, 24, 28))
   }
 
   override fun onDestroy() {

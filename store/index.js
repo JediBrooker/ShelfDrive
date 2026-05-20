@@ -10,7 +10,6 @@ export const state = () => ({
   playerIsStartingPlayback: false, // When pressing play before native play response
   playerStartingPlaybackMediaId: null,
   isCasting: false,
-  isCastAvailable: false,
   attemptingConnection: false,
   socketConnected: false,
   networkConnected: false,
@@ -137,14 +136,10 @@ export const mutations = {
   },
   setPlaybackSession(state, playbackSession) {
     state.currentPlaybackSession = playbackSession
-
-    state.isCasting = playbackSession?.mediaPlayer === 'cast-player'
+    state.isCasting = false
   },
-  setMediaPlayer(state, mediaPlayer) {
-    state.isCasting = mediaPlayer === 'cast-player'
-  },
-  setCastAvailable(state, available) {
-    state.isCastAvailable = available
+  setMediaPlayer(state) {
+    state.isCasting = false
   },
   setAttemptingConnection(state, val) {
     state.attemptingConnection = val

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+  <title id="title">ShelfDrive</title>
+  <rect width="256" height="256" rx="56" fill="#11181c"/>
+  <path d="M62 71c0-10 8-18 18-18h96c10 0 18 8 18 18v114c0 10-8 18-18 18H80c-10 0-18-8-18-18V71Z" fill="#18242b" stroke="#2e4148" stroke-width="6"/>
+  <path d="M85 80h58c14 0 25 11 25 25v91H110c-14 0-25-11-25-25V80Z" fill="#22c09a"/>
+  <path d="M111 80h34c13 0 23 10 23 23v21h-33c-13 0-24-11-24-24V80Z" fill="#f2bf5e"/>
+  <path d="M105 143h45M105 163h45" stroke="#ecf7f3" stroke-width="9" stroke-linecap="round"/>
+  <path d="M79 57v146M178 57v146" stroke="#ecf7f3" stroke-width="7" stroke-linecap="round" opacity=".9"/>
+</svg>

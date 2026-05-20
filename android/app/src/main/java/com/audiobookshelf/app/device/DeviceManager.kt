@@ -3,6 +3,7 @@ package com.audiobookshelf.app.device
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
@@ -186,12 +187,22 @@ object DeviceManager {
    */
   fun initializeWidgetUpdater(context: Context) {
     Log.d(tag, "Initializing widget updater")
+    if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_APP_WIDGETS)) {
+      Log.i(tag, "App widgets are not available on this device; widget updates disabled")
+      widgetUpdater = null
+      return
+    }
     widgetUpdater =
             (object : WidgetEventEmitter {
               override fun onPlayerChanged(pns: PlayerNotificationService) {
                 val isPlaying = pns.currentPlayer.isPlaying
 
-                val appWidgetManager = AppWidgetManager.getInstance(context)
+                val appWidgetManager =
+                        context.getSystemService(Context.APPWIDGET_SERVICE) as? AppWidgetManager
+                if (appWidgetManager == null) {
+                  Log.i(tag, "AppWidgetManager unavailable; skipping widget update")
+                  return
+                }
                 val componentName = ComponentName(context, MediaPlayerWidget::class.java)
                 val ids = appWidgetManager.getAppWidgetIds(componentName)
                 val playbackSession = pns.getCurrentPlaybackSessionCopy()
@@ -209,7 +220,12 @@ object DeviceManager {
               }
 
               override fun onPlayerClosed() {
-                val appWidgetManager = AppWidgetManager.getInstance(context)
+                val appWidgetManager =
+                        context.getSystemService(Context.APPWIDGET_SERVICE) as? AppWidgetManager
+                if (appWidgetManager == null) {
+                  Log.i(tag, "AppWidgetManager unavailable; skipping widget close update")
+                  return
+                }
                 val componentName = ComponentName(context, MediaPlayerWidget::class.java)
                 val ids = appWidgetManager.getAppWidgetIds(componentName)
                 for (widgetId in ids) {

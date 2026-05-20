@@ -4,6 +4,10 @@
     xmlns:tools="http://schemas.android.com/tools"
     android:installLocation="preferExternal" >
 
+    <uses-feature
+        android:name="android.hardware.type.automotive"
+        android:required="false" />
+
     <!-- Permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
@@ -25,6 +29,10 @@
         android:usesCleartextTraffic="true"
         android:largeHeap="true" >
 
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
         <!-- Android app widget -->
         <receiver
           android:name="MediaPlayerWidget"
@@ -42,17 +50,6 @@
             android:resource="@xml/samsung_cover_widget_info" />
         </receiver>
 
-        <!-- Used by Android Auto -->
-        <meta-data
-            android:name="com.google.android.gms.car.notification.SmallIcon"
-            android:resource="@drawable/icon" />
-        <meta-data
-            android:name="com.google.android.gms.car.application"
-            android:resource="@xml/automotive_app_desc" /> <!-- Support for Cast -->
-        <meta-data
-            android:name="com.google.android.gms.cast.framework.OPTIONS_PROVIDER_CLASS_NAME"
-            android:value="com.audiobookshelf.app.CastOptionsProvider" />
-
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
@@ -64,6 +61,7 @@
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.APP_MUSIC" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />

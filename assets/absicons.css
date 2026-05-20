@@ -1,10 +1,7 @@
 @font-face {
   font-family: 'absicons';
-  src: url('~static/fonts/absicons/absicons.eot?2jfq33');
-  src: url('~static/fonts/absicons/absicons.eot?2jfq33#iefix') format('embedded-opentype'),
-    url('~static/fonts/absicons/absicons.ttf?2jfq33') format('truetype'),
-    url('~static/fonts/absicons/absicons.woff?2jfq33') format('woff'),
-    url('~static/fonts/absicons/absicons.svg?2jfq33#absicons') format('svg');
+  src: url('~static/fonts/absicons/absicons.woff?2jfq33') format('woff'),
+    url('~static/fonts/absicons/absicons.ttf?2jfq33') format('truetype');
   font-weight: normal;
   font-style: normal;
   font-display: block;
@@ -53,7 +50,12 @@
 }
 
 .icon-audiobookshelf:before {
-  content: "\e900";
+  content: "";
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  background: url('/shelfdrive-logo.svg') center / contain no-repeat;
+  vertical-align: -0.12em;
 }
 
 .icon-database:before {

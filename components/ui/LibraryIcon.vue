@@ -1,6 +1,12 @@
 <template>
   <div :class="`h-${size} w-${size} min-w-${size} text-${fontSize}`" class="flex items-center justify-center">
-    <span class="abs-icons" :class="`icon-${iconToUse}`"></span>
+    <img
+      v-if="iconToUse === 'audiobookshelf'"
+      src="/shelfdrive-logo.svg"
+      class="h-full w-full object-contain rounded"
+      alt=""
+    />
+    <span v-else class="abs-icons" :class="`icon-${iconToUse}`"></span>
   </div>
 </template>
 

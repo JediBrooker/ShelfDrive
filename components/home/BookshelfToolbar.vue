@@ -1,20 +1,28 @@
 <template>
-  <div class="w-full h-9 bg-bg relative z-20">
-    <div id="bookshelf-toolbar" class="absolute top-0 left-0 w-full h-full z-20 flex items-center px-2">
-      <div class="flex items-center w-full text-sm">
-        <p v-show="!selectedSeriesName" class="pt-1">{{ $formatNumber(totalEntities) }} {{ entityTitle }}</p>
-        <p v-show="selectedSeriesName" class="ml-2 pt-1">{{ selectedSeriesName }} ({{ $formatNumber(totalEntities) }})</p>
+  <div class="w-full h-16 bg-bg relative z-20">
+    <div id="bookshelf-toolbar" class="absolute top-0 left-0 w-full h-full z-20 flex items-center px-5">
+      <div class="flex items-center w-full text-lg">
+        <p v-show="!selectedSeriesName" class="font-semibold truncate">{{ $formatNumber(totalEntities) }} {{ entityTitle }}</p>
+        <p v-show="selectedSeriesName" class="font-semibold truncate">{{ selectedSeriesName }} ({{ $formatNumber(totalEntities) }})</p>
         <div class="flex-grow" />
-        <span v-if="page == 'library' || seriesBookPage" class="material-symbols text-2xl px-2" @click="changeView">{{ !bookshelfListView ? 'view_list' : 'grid_view' }}</span>
+        <button v-if="page == 'library' || seriesBookPage" type="button" class="toolbar-button" aria-label="Change view" @click="changeView">
+          <span class="material-symbols text-3xl leading-none">{{ !bookshelfListView ? 'view_list' : 'grid_view' }}</span>
+        </button>
         <template v-if="page === 'library'">
-          <div class="relative flex items-center px-2">
-            <span class="material-symbols text-2xl" @click="showFilterModal = true">filter_alt</span>
+          <button type="button" class="toolbar-button relative" aria-label="Filter" @click="showFilterModal = true">
+            <span class="material-symbols text-3xl leading-none">filter_alt</span>
             <div v-show="hasFilters" class="absolute top-0 right-2 w-2 h-2 rounded-full bg-success border border-green-300 shadow-sm z-10 pointer-events-none" />
-          </div>
-          <span class="material-symbols text-2xl px-2" @click="showSortModal = true">sort</span>
+          </button>
+          <button type="button" class="toolbar-button" aria-label="Sort" @click="showSortModal = true">
+            <span class="material-symbols text-3xl leading-none">sort</span>
+          </button>
         </template>
-        <span v-if="seriesBookPage" class="material-symbols text-2xl px-2" @click="downloadSeries">download</span>
-        <span v-if="(page == 'library' && isBookLibrary) || seriesBookPage" class="material-symbols text-2xl px-2" @click="showMoreMenuDialog = true">more_vert</span>
+        <button v-if="seriesBookPage" type="button" class="toolbar-button" aria-label="Download series" @click="downloadSeries">
+          <span class="material-symbols text-3xl leading-none">download</span>
+        </button>
+        <button v-if="(page == 'library' && isBookLibrary) || seriesBookPage" type="button" class="toolbar-button" aria-label="More options" @click="showMoreMenuDialog = true">
+          <span class="material-symbols text-3xl leading-none">more_vert</span>
+        </button>
       </div>
     </div>
 
@@ -165,6 +173,19 @@ export default {
 
 <style>
 #bookshelf-toolbar {
-  box-shadow: 0px 5px 5px #11111155;
+  border-bottom: 1px solid rgba(var(--color-border), 0.56);
+  box-shadow: 0px 10px 22px rgba(0, 0, 0, 0.18);
+}
+.toolbar-button {
+  align-items: center;
+  border-radius: 1rem;
+  display: flex;
+  height: 3.5rem;
+  justify-content: center;
+  margin-left: 0.5rem;
+  min-width: 3.5rem;
+}
+.toolbar-button:hover {
+  background: rgba(var(--color-bg-hover), 0.36);
 }
 </style>

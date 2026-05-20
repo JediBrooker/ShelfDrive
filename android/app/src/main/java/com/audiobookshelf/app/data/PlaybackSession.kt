@@ -5,6 +5,7 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
+import android.util.Log
 import android.support.v4.media.MediaMetadataCompat
 import androidx.core.content.FileProvider
 import androidx.core.net.toFile
@@ -167,7 +168,7 @@ class PlaybackSession(
         coverUri =
                 FileProvider.getUriForFile(
                         ctx,
-                        "${BuildConfig.APPLICATION_ID}.fileprovider",
+                        "${ctx.packageName}.fileprovider",
                         coverUri.toFile()
                 )
       }
@@ -226,16 +227,20 @@ class PlaybackSession(
 
     // Local covers get bitmap
     if (localLibraryItem?.coverContentUrl != null) {
-      val bitmap =
-              if (Build.VERSION.SDK_INT < 28) {
-                MediaStore.Images.Media.getBitmap(ctx.contentResolver, coverUri)
-              } else {
-                val source: ImageDecoder.Source =
-                        ImageDecoder.createSource(ctx.contentResolver, coverUri)
-                ImageDecoder.decodeBitmap(source)
-              }
-      metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
-      metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, bitmap)
+      try {
+        val bitmap =
+                if (Build.VERSION.SDK_INT < 28) {
+                  MediaStore.Images.Media.getBitmap(ctx.contentResolver, coverUri)
+                } else {
+                  val source: ImageDecoder.Source =
+                          ImageDecoder.createSource(ctx.contentResolver, coverUri)
+                  ImageDecoder.decodeBitmap(source)
+                }
+        metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
+        metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, bitmap)
+      } catch (error: Exception) {
+        Log.e("PlaybackSession", "Failed to decode local cover bitmap", error)
+      }
     }
 
     return metadataBuilder.build()
@@ -269,14 +274,15 @@ class PlaybackSession(
       val mediaUri = this.getContentUri(audioTrack)
       val mimeType = audioTrack.mimeType
 
-      val queueItem = getQueueItem(audioTrack) // Queue item used in exo player CastManager
-      val mediaItem =
+      val mediaItemBuilder =
               MediaItem.Builder()
                       .setUri(mediaUri)
-                      .setTag(queueItem)
                       .setMediaMetadata(mediaMetadata)
                       .setMimeType(mimeType)
-                      .build()
+      if (!isLocal) {
+        mediaItemBuilder.setTag(getQueueItem(audioTrack)) // Queue item used only by the dormant Cast player
+      }
+      val mediaItem = mediaItemBuilder.build()
       mediaItems.add(mediaItem)
     }
     return mediaItems

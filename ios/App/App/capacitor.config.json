@@ -1,13 +1,13 @@
 {
-	"appId": "com.audiobookshelf.app",
-	"appName": "audiobookshelf-app",
+	"appId": "com.jedibrooker.shelfdrive",
+	"appName": "ShelfDrive",
 	"webDir": "dist",
 	"plugins": {
 		"CapacitorHttp": {
 			"enabled": false
 		},
 		"StatusBar": {
-			"backgroundColor": "#232323",
+			"backgroundColor": "#11181c",
 			"style": "DARK"
 		}
 	},

@@ -1,10 +1,10 @@
 <template>
-  <div class="w-full h-9 bg-bg relative">
-    <div id="bookshelf-navbar" class="absolute z-10 top-0 left-0 w-full h-full flex bg-secondary">
-      <nuxt-link v-for="item in items" :key="item.to" :to="item.to" class="h-full flex-grow flex items-center justify-center" :class="routeName === item.routeName ? 'bg-primary' : 'text-fg-muted'">
-        <p v-if="routeName === item.routeName" class="text-sm font-semibold">{{ item.text }}</p>
-        <span v-else-if="item.iconPack === 'abs-icons'" class="abs-icons" :class="`icon-${item.icon} ${item.iconClass || ''}`"></span>
-        <span v-else :class="`${item.iconPack} ${item.iconClass || ''}`">{{ item.icon }}</span>
+  <div class="w-full h-20 bg-bg relative">
+    <div id="bookshelf-navbar" class="absolute z-10 top-0 left-0 w-full h-full flex items-center gap-3 bg-secondary/95 px-4">
+      <nuxt-link v-for="item in items" :key="item.to" :to="item.to" class="h-16 min-w-0 flex-grow flex items-center justify-center gap-2 rounded-2xl border px-3" :class="routeName === item.routeName ? 'bg-primary border-border text-fg shadow-sm active-tab' : 'text-fg-muted border-transparent hover:bg-bg-hover/30'">
+        <span v-if="item.iconPack === 'abs-icons'" class="abs-icons flex-shrink-0" :class="`icon-${item.icon} ${item.iconClass || ''}`"></span>
+        <span v-else class="flex-shrink-0" :class="`${item.iconPack} ${item.iconClass || ''}`">{{ item.icon }}</span>
+        <p class="text-base font-semibold truncate">{{ item.text }}</p>
       </nuxt-link>
     </div>
   </div>
@@ -145,9 +145,13 @@ export default {
 
 <style>
 #bookshelf-navbar {
-  box-shadow: 0px 5px 5px #11111155;
+  border-bottom: 1px solid rgba(var(--color-border), 0.72);
+  box-shadow: 0px 10px 22px rgba(0, 0, 0, 0.22);
 }
 #bookshelf-navbar a {
-  font-size: 0.9rem;
+  font-size: 1.12rem;
+}
+#bookshelf-navbar .active-tab {
+  box-shadow: inset 0 0 0 1px rgba(34, 192, 154, 0.24), 0 8px 20px rgba(0, 0, 0, 0.2);
 }
 </style>

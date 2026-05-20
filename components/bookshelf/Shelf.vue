@@ -1,15 +1,15 @@
 <template>
   <div class="w-full relative">
-    <div v-if="altViewEnabled" class="px-5 pb-3 pt-4">
-      <p class="font-semibold" :style="{ fontSize: sizeMultiplier + 'rem' }">{{ label }}</p>
+    <div v-if="altViewEnabled" class="px-5 pb-4 pt-6">
+      <p class="font-semibold" :style="{ fontSize: Math.max(1.1, sizeMultiplier * 0.9) + 'rem' }">{{ label }}</p>
     </div>
 
-    <div class="flex items-end px-3 max-w-full overflow-x-auto" :class="altViewEnabled ? '' : 'bookshelfRow'" :style="{ height: shelfHeight + 'px', paddingBottom: entityPaddingBottom + 'px' }">
+    <div class="flex items-end px-4 max-w-full overflow-x-auto" :class="altViewEnabled ? '' : 'bookshelfRow'" :style="{ height: shelfHeight + 'px', paddingBottom: entityPaddingBottom + 'px' }">
       <template v-for="(entity, index) in entities">
-        <cards-lazy-book-card v-if="type === 'book' || type === 'podcast'" :key="entity.id" :index="index" :book-mount="entity" :width="bookWidth" :height="entityHeight" :book-cover-aspect-ratio="bookCoverAspectRatio" :is-alt-view-enabled="altViewEnabled" class="mx-2 relative" />
-        <cards-lazy-book-card v-if="type === 'episode'" :key="entity.recentEpisode.id" :index="index" :book-mount="entity" :width="bookWidth" :height="entityHeight" :book-cover-aspect-ratio="bookCoverAspectRatio" :is-alt-view-enabled="altViewEnabled" class="mx-2 relative" />
-        <cards-lazy-series-card v-else-if="type === 'series'" :key="entity.id" :index="index" :series-mount="entity" :width="bookWidth * 2" :height="entityHeight" :book-cover-aspect-ratio="bookCoverAspectRatio" :is-alt-view-enabled="altViewEnabled" is-categorized class="mx-2 relative" />
-        <cards-author-card v-else-if="type === 'authors'" :key="entity.id" :width="bookWidth / 1.25" :height="bookWidth" :author="entity" :size-multiplier="1" class="mx-2" />
+        <cards-lazy-book-card v-if="type === 'book' || type === 'podcast'" :key="entity.id" :index="index" :book-mount="entity" :width="bookWidth" :height="entityHeight" :book-cover-aspect-ratio="bookCoverAspectRatio" :is-alt-view-enabled="altViewEnabled" class="mx-3 relative" />
+        <cards-lazy-book-card v-if="type === 'episode'" :key="entity.recentEpisode.id" :index="index" :book-mount="entity" :width="bookWidth" :height="entityHeight" :book-cover-aspect-ratio="bookCoverAspectRatio" :is-alt-view-enabled="altViewEnabled" class="mx-3 relative" />
+        <cards-lazy-series-card v-else-if="type === 'series'" :key="entity.id" :index="index" :series-mount="entity" :width="bookWidth * 2" :height="entityHeight" :book-cover-aspect-ratio="bookCoverAspectRatio" :is-alt-view-enabled="altViewEnabled" is-categorized class="mx-3 relative" />
+        <cards-author-card v-else-if="type === 'authors'" :key="entity.id" :width="bookWidth / 1.25" :height="bookWidth" :author="entity" :size-multiplier="1.5" class="mx-3" />
       </template>
     </div>
 
@@ -50,7 +50,7 @@ export default {
       return this.entityHeight + 40
     },
     bookWidth() {
-      var coverSize = 100
+      var coverSize = 200
       if (this.isCoverSquareAspectRatio) return coverSize * 1.6
       return coverSize
     },

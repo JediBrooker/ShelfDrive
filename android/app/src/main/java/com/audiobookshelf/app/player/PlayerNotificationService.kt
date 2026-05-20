@@ -281,6 +281,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     playerNotificationManager.setUsePlayPauseActions(true)
     playerNotificationManager.setUseNextAction(false)
     playerNotificationManager.setUsePreviousAction(false)
+    playerNotificationManager.setUseFastForwardAction(true)
+    playerNotificationManager.setUseRewindAction(true)
     playerNotificationManager.setUseChronometer(false)
     playerNotificationManager.setUseStopAction(false)
     playerNotificationManager.setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
@@ -300,7 +302,11 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               override fun getSupportedQueueNavigatorActions(player: Player): Long {
                 return PlaybackStateCompat.ACTION_PLAY_PAUSE or
                         PlaybackStateCompat.ACTION_PLAY or
-                        PlaybackStateCompat.ACTION_PAUSE
+                        PlaybackStateCompat.ACTION_PAUSE or
+                        PlaybackStateCompat.ACTION_FAST_FORWARD or
+                        PlaybackStateCompat.ACTION_REWIND or
+                        PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                        PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
               }
 
               override fun getMediaDescription(
@@ -320,14 +326,18 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                 // Note: In Android Auto for local cover images, setting the icon uri to a local path does not work (cover is blank)
                 // so we create and set the bitmap here instead of AbMediaDescriptionAdapter
                 if (currentPlaybackSession!!.localLibraryItem?.coverContentUrl != null) {
-                  bitmap =
-                    if (Build.VERSION.SDK_INT < 28) {
-                      MediaStore.Images.Media.getBitmap(ctx.contentResolver, coverUri)
-                    } else {
-                      val source: ImageDecoder.Source =
-                        ImageDecoder.createSource(ctx.contentResolver, coverUri)
-                      ImageDecoder.decodeBitmap(source)
-                    }
+                  try {
+                    bitmap =
+                      if (Build.VERSION.SDK_INT < 28) {
+                        MediaStore.Images.Media.getBitmap(ctx.contentResolver, coverUri)
+                      } else {
+                        val source: ImageDecoder.Source =
+                          ImageDecoder.createSource(ctx.contentResolver, coverUri)
+                        ImageDecoder.decodeBitmap(source)
+                      }
+                  } catch (error: Exception) {
+                    Log.e(tag, "Failed to decode local cover bitmap", error)
+                  }
                 }
 
                 // Fix for local images crashing on Android 11 for specific devices
@@ -586,6 +596,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                     PlaybackStateCompat.ACTION_PAUSE or
                     PlaybackStateCompat.ACTION_FAST_FORWARD or
                     PlaybackStateCompat.ACTION_REWIND or
+                    PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
+                    PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
                     PlaybackStateCompat.ACTION_STOP
 
     if (deviceSettings.allowSeekingOnMediaControls) {
@@ -988,6 +1000,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     seekBackward(deviceSettings.jumpBackwardsTimeMs)
   }
 
+  fun seekForwardFromMediaSession() {
+    seekForward(MEDIA_SESSION_SEEK_INTERVAL_MS)
+  }
+
+  fun seekBackwardFromMediaSession() {
+    seekBackward(MEDIA_SESSION_SEEK_INTERVAL_MS)
+  }
+
   fun seekForward(amount: Long) {
     seekPlayer(getCurrentTime() + amount)
   }
@@ -1110,11 +1130,15 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           mutableListOf(
                   "com.audiobookshelf.app",
                   "com.audiobookshelf.app.debug",
+                  "com.jedibrooker.shelfdrive",
+                  "com.jedibrooker.shelfdrive.debug",
                   ANDROID_AUTO_PKG_NAME,
                   ANDROID_AUTO_SIMULATOR_PKG_NAME,
                   ANDROID_WEARABLE_PKG_NAME,
                   ANDROID_GSEARCH_PKG_NAME,
-                  ANDROID_AUTOMOTIVE_PKG_NAME
+                  ANDROID_AUTOMOTIVE_PKG_NAME,
+                  ANDROID_CAR_MEDIA_PKG_NAME,
+                  POLESTAR_LAUNCHER_PKG_NAME
           )
 
   private val AUTO_MEDIA_ROOT = "/"

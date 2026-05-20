@@ -33,14 +33,14 @@ android {
   }
   compileSdk rootProject.ext.compileSdkVersion
   defaultConfig {
-    applicationId "com.audiobookshelf.app"
+    applicationId "com.jedibrooker.shelfdrive"
     minSdkVersion rootProject.ext.minSdkVersion
     targetSdkVersion rootProject.ext.targetSdkVersion
     versionCode 117
-    versionName "0.13.0-beta"
+    versionName "0.1"
     testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     manifestPlaceholders = [
-      "appAuthRedirectScheme": "com.audiobookshelf.app"
+      "appAuthRedirectScheme": "com.jedibrooker.shelfdrive"
     ]
     aaptOptions {
       // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

@@ -1,1 +1,1 @@
-Audiobook and podcast player for your self-hosted Audiobookshelf server
+Unofficial client for self-hosted Audiobookshelf servers

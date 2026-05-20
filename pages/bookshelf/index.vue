@@ -4,18 +4,18 @@
       <widgets-loading-spinner />
       <p class="pl-4">{{ $strings.MessageAttemptingServerConnection }}</p>
     </div>
-    <div v-if="shelves.length && isLoading" class="w-full pt-4 flex items-center justify-center">
+    <div v-if="visibleShelves.length && isLoading" class="w-full pt-4 flex items-center justify-center">
       <widgets-loading-spinner />
       <p class="pl-4">{{ $strings.MessageLoadingServerData }}</p>
     </div>
 
     <div class="w-full" :class="{ 'py-6': altViewEnabled }">
-      <template v-for="(shelf, index) in shelves">
-        <bookshelf-shelf :key="shelf.id" :label="getShelfLabel(shelf)" :entities="shelf.entities" :type="shelf.type" :style="{ zIndex: shelves.length - index }" />
+      <template v-for="(shelf, index) in visibleShelves">
+        <bookshelf-shelf :key="shelf.id" :label="getShelfLabel(shelf)" :entities="shelf.entities" :type="shelf.type" :style="{ zIndex: visibleShelves.length - index }" />
       </template>
     </div>
 
-    <div v-if="!shelves.length && !isLoading" class="absolute top-0 left-0 w-full h-full flex items-center justify-center">
+    <div v-if="!visibleShelves.length && !isLoading" class="absolute top-0 left-0 w-full h-full flex items-center justify-center">
       <div>
         <p class="mb-4 text-center text-xl">
           {{ $strings.MessageBookshelfEmpty }}
@@ -31,7 +31,7 @@
         </div>
       </div>
     </div>
-    <div v-else-if="!shelves.length && isLoading && !attemptingConnection" class="absolute top-0 left-0 z-50 w-full h-full flex items-center justify-center">
+    <div v-else-if="!visibleShelves.length && isLoading && !attemptingConnection" class="absolute top-0 left-0 z-50 w-full h-full flex items-center justify-center">
       <ui-loading-indicator :text="$strings.MessageLoading" />
     </div>
   </div>
@@ -112,9 +112,16 @@ export default {
     },
     attemptingConnection() {
       return this.$store.state.attemptingConnection
+    },
+    visibleShelves() {
+      return this.shelves.filter((shelf) => !this.isHiddenHomeShelf(shelf))
     }
   },
   methods: {
+    isHiddenHomeShelf(shelf) {
+      const label = String(this.getShelfLabel(shelf) || '').trim().toLowerCase()
+      return shelf.id === 'listen-again' || shelf.labelStringKey === 'LabelListenAgain' || label === 'listen again'
+    },
     getShelfLabel(shelf) {
       if (shelf.labelStringKey && this.$strings[shelf.labelStringKey]) return this.$strings[shelf.labelStringKey]
       return shelf.label

@@ -6,9 +6,6 @@
       <div class="top-4 left-4 absolute cursor-pointer">
         <span class="material-symbols text-5xl" :class="{ 'text-black text-opacity-75': coverBgIsLight && theme !== 'black' }" @click="collapseFullscreen">keyboard_arrow_down</span>
       </div>
-      <div v-show="showCastBtn" class="top-6 right-16 absolute cursor-pointer">
-        <span class="material-symbols text-3xl" :class="coverBgIsLight && theme !== 'black' ? 'text-black' : ''" @click="castClick">{{ isCasting ? 'cast_connected' : 'cast' }}</span>
-      </div>
       <div class="top-6 right-4 absolute cursor-pointer">
         <span class="material-symbols text-3xl" :class="{ 'text-black text-opacity-75': coverBgIsLight && theme !== 'black' }" @click="showMoreMenuDialog = true">more_vert</span>
       </div>
@@ -67,7 +64,7 @@
       </div>
       <div v-else class="w-full h-full absolute top-0 left-0 pointer-events-none" style="background: var(--gradient-minimized-audio-player)" />
 
-      <div id="playerControls" class="absolute right-0 bottom-0 mx-auto" style="max-width: 414px">
+      <div id="playerControls" class="absolute right-0 bottom-0 mx-auto" style="max-width: 560px">
         <div class="flex items-center max-w-full" :class="playerSettings.lockUi ? 'justify-center' : 'justify-between'">
           <span v-show="showFullscreen && !playerSettings.lockUi" class="material-symbols next-icon text-fg cursor-pointer" :class="showLoadingState ? 'text-opacity-10' : 'text-opacity-75'" @click.stop="jumpChapterStart">first_page</span>
           <div v-show="!playerSettings.lockUi" class="jump-icon text-fg cursor-pointer flex flex-col items-center" :class="showLoadingState ? 'text-opacity-10' : 'text-opacity-75'" @click.stop="jumpBackwards">
@@ -274,15 +271,6 @@ export default {
     showLoadingState() {
       return this.isLoading || this.isCheckingServerProgress
     },
-    showCastBtn() {
-      return this.$store.state.isCastAvailable
-    },
-    isCasting() {
-      return this.mediaPlayer === 'cast-player'
-    },
-    mediaPlayer() {
-      return this.playbackSession?.mediaPlayer || null
-    },
     mediaType() {
       return this.playbackSession?.mediaType || null
     },
@@ -433,14 +421,6 @@ export default {
       await this.$hapticsImpact()
       this.seek(chapter.start)
       this.showChapterModal = false
-    },
-    async castClick() {
-      await this.$hapticsImpact()
-      if (this.isLocalPlayMethod) {
-        this.$eventBus.$emit('cast-local-item')
-        return
-      }
-      AbsAudioPlayer.requestSession()
     },
     clickContainer() {
       this.expandToFullscreen()
@@ -936,14 +916,15 @@ export default {
       this.windowHeight = window.innerHeight
       this.windowWidth = window.innerWidth
       const coverHeight = this.fullscreenBookCoverWidth * this.bookCoverAspectRatio
-      const coverImageWidthCollapsed = 46 / this.bookCoverAspectRatio
-      const titleAuthorLeftOffsetCollapsed = 30 + coverImageWidthCollapsed
-      const titleAuthorWidthCollapsed = this.windowWidth - 128 - titleAuthorLeftOffsetCollapsed - 10
+      const coverImageHeightCollapsed = 70
+      const coverImageWidthCollapsed = coverImageHeightCollapsed / this.bookCoverAspectRatio
+      const titleAuthorLeftOffsetCollapsed = 32 + coverImageWidthCollapsed
+      const titleAuthorWidthCollapsed = Math.max(120, this.windowWidth - 340 - titleAuthorLeftOffsetCollapsed)
 
       document.documentElement.style.setProperty('--cover-image-width', this.fullscreenBookCoverWidth + 'px')
       document.documentElement.style.setProperty('--cover-image-height', coverHeight + 'px')
       document.documentElement.style.setProperty('--cover-image-width-collapsed', coverImageWidthCollapsed + 'px')
-      document.documentElement.style.setProperty('--cover-image-height-collapsed', 46 + 'px')
+      document.documentElement.style.setProperty('--cover-image-height-collapsed', coverImageHeightCollapsed + 'px')
       document.documentElement.style.setProperty('--title-author-left-offset-collapsed', titleAuthorLeftOffsetCollapsed + 'px')
       document.documentElement.style.setProperty('--title-author-width-collapsed', titleAuthorWidthCollapsed + 'px')
     },
@@ -1005,17 +986,17 @@ export default {
 :root {
   --cover-image-width: 0px;
   --cover-image-height: 0px;
-  --cover-image-width-collapsed: 46px;
-  --cover-image-height-collapsed: 46px;
+  --cover-image-width-collapsed: 70px;
+  --cover-image-height-collapsed: 70px;
   --title-author-left-offset-collapsed: 80px;
   --title-author-width-collapsed: 40%;
 }
 
 .playerContainer {
-  height: 120px;
+  height: 168px;
 }
 .fullscreen .playerContainer {
-  height: 200px;
+  height: 260px;
 }
 #playerContent {
   box-shadow: 0px -8px 8px #11111155;
@@ -1027,14 +1008,14 @@ export default {
 #playerTrack {
   transition: all 0.15s cubic-bezier(0.39, 0.575, 0.565, 1);
   transition-property: margin;
-  bottom: 35px;
+  bottom: 52px;
 }
 .fullscreen #playerTrack {
   bottom: unset;
 }
 
 .cover-wrapper {
-  bottom: 68px;
+  bottom: 86px;
   left: 24px;
   height: var(--cover-image-height-collapsed);
   width: var(--cover-image-width-collapsed);
@@ -1046,7 +1027,7 @@ export default {
 }
 
 .total-track {
-  bottom: 215px;
+  bottom: 278px;
   left: 0;
   right: 0;
 }
@@ -1057,20 +1038,20 @@ export default {
   transform-origin: left bottom;
 
   width: var(--title-author-width-collapsed);
-  bottom: 76px;
+  bottom: 96px;
   left: var(--title-author-left-offset-collapsed);
   text-align: left;
 }
 .title-author-texts .title-text {
   transition: all 0.15s cubic-bezier(0.39, 0.575, 0.565, 1);
   transition-property: font-size;
-  font-size: 0.85rem;
+  font-size: 1.05rem;
   line-height: 1.5;
 }
 .title-author-texts .author-text {
   transition: all 0.15s cubic-bezier(0.39, 0.575, 0.565, 1);
   transition-property: font-size;
-  font-size: 0.75rem;
+  font-size: 0.9rem;
   line-height: 1.2;
 }
 
@@ -1092,16 +1073,20 @@ export default {
 #playerControls {
   transition: all 0.15s cubic-bezier(0.39, 0.575, 0.565, 1);
   transition-property: width, bottom;
-  width: 128px;
-  padding-right: 24px;
-  bottom: 70px;
+  width: 300px;
+  padding-right: 28px;
+  bottom: 88px;
 }
 #playerControls .jump-icon {
   transition: all 0.15s cubic-bezier(0.39, 0.575, 0.565, 1);
   transition-property: font-size;
 
-  margin: 0px 0px;
-  font-size: 1.6rem;
+  align-items: center;
+  justify-content: center;
+  margin: 0px;
+  min-height: 3.75rem;
+  min-width: 3.75rem;
+  font-size: 2.2rem;
 }
 #playerControls .jump-label {
   margin-top: 2px;
@@ -1110,17 +1095,17 @@ export default {
   transition: all 0.15s cubic-bezier(0.39, 0.575, 0.565, 1);
   transition-property: padding, margin, height, width, min-width, min-height;
 
-  height: 40px;
-  width: 40px;
-  min-width: 40px;
-  min-height: 40px;
-  margin: 0px 7px;
+  height: 4.25rem;
+  width: 4.25rem;
+  min-width: 4.25rem;
+  min-height: 4.25rem;
+  margin: 0px 0.75rem;
 }
 #playerControls .play-btn .material-symbols {
   transition: all 0.15s cubic-bezier(0.39, 0.575, 0.565, 1);
   transition-property: font-size;
 
-  font-size: 1.5rem;
+  font-size: 2.25rem;
 }
 
 .fullscreen .cover-wrapper {
@@ -1128,31 +1113,38 @@ export default {
   height: var(--cover-image-height);
   width: var(--cover-image-width);
   left: calc(50% - (calc(var(--cover-image-width)) / 2));
-  bottom: calc(50% + 120px - (calc(var(--cover-image-height)) / 2));
+  bottom: calc(50% + 150px - (calc(var(--cover-image-height)) / 2));
   border-radius: 16px;
   overflow: hidden;
 }
 
 .fullscreen #playerControls {
   width: 100%;
-  padding-left: 24px;
-  padding-right: 24px;
-  bottom: 78px;
+  padding-left: 36px;
+  padding-right: 36px;
+  bottom: 104px;
   left: 0;
 }
 .fullscreen #playerControls .jump-icon {
-  font-size: 2.4rem;
+  min-height: 4.75rem;
+  min-width: 4.75rem;
+  font-size: 3rem;
 }
 .fullscreen #playerControls .next-icon {
-  font-size: 2rem;
+  font-size: 2.75rem;
+  min-height: 4.25rem;
+  min-width: 4.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .fullscreen #playerControls .play-btn {
-  height: 65px;
-  width: 65px;
-  min-width: 65px;
-  min-height: 65px;
+  height: 5.5rem;
+  width: 5.5rem;
+  min-width: 5.5rem;
+  min-height: 5.5rem;
 }
 .fullscreen #playerControls .play-btn .material-symbols {
-  font-size: 2.1rem;
+  font-size: 3rem;
 }
 </style>

@@ -1,16 +1,17 @@
 <template>
-  <div class="w-full h-16 bg-primary relative z-20">
-    <div id="appbar" class="absolute top-0 left-0 w-full h-full flex items-center px-2">
-      <nuxt-link v-show="!showBack" to="/" class="mr-3">
-        <img src="/Logo.png" class="h-10 w-10" />
+  <div class="w-full h-24 bg-primary relative z-20 shelfdrive-topbar">
+    <div id="appbar" class="absolute top-0 left-0 w-full h-full flex items-center gap-4 px-5">
+      <nuxt-link v-show="!showBack" to="/" class="h-20 pr-5 rounded-2xl flex items-center gap-4 hover:bg-bg-hover/40" style="min-width: 5rem" aria-label="ShelfDrive home">
+        <img src="/shelfdrive-logo.svg" class="h-14 w-14 shelfdrive-logo" />
+        <span class="hidden sm:inline text-2xl font-semibold tracking-normal text-fg">ShelfDrive</span>
       </nuxt-link>
-      <a v-if="showBack" @click="back" aria-label="Back" class="rounded-full h-10 w-10 flex items-center justify-center mr-2 cursor-pointer">
-        <span class="material-symbols text-3xl text-fg">arrow_back</span>
+      <a v-if="showBack" @click="back" aria-label="Back" class="rounded-2xl h-16 w-16 flex items-center justify-center cursor-pointer bg-secondary/70 border border-border shadow-sm hover:bg-bg-hover/40">
+        <span class="material-symbols text-4xl text-fg">arrow_back</span>
       </a>
       <div v-if="user && currentLibrary">
-        <button type="button" aria-label="Show library modal" class="pl-1.5 pr-2.5 py-2 bg-bg bg-opacity-30 rounded-md flex items-center" @click="clickShowLibraryModal">
-          <ui-library-icon :icon="currentLibraryIcon" :size="4" font-size="base" />
-          <p class="text-sm leading-4 ml-2 mt-0.5 max-w-24 truncate">{{ currentLibraryName }}</p>
+        <button type="button" aria-label="Show library modal" class="h-16 max-w-[20rem] pl-4 pr-6 bg-secondary/90 border border-border rounded-2xl flex items-center shadow-sm hover:bg-bg-hover/40" @click="clickShowLibraryModal">
+          <ui-library-icon :icon="currentLibraryIcon" :size="6" font-size="2xl" />
+          <p class="text-xl leading-6 ml-4 max-w-[13rem] truncate">{{ currentLibraryName }}</p>
         </button>
       </div>
 
@@ -20,42 +21,20 @@
 
       <widgets-download-progress-indicator />
 
-      <!-- Must be connected to a server to cast, only supports media items on server -->
-      <button type="button" aria-label="Cast" v-show="isCastAvailable && user" class="mx-2 cursor-pointer flex items-center" @click="castClick">
-        <span class="material-symbols text-2xl leading-none">
-          {{ isCasting ? 'cast_connected' : 'cast' }}
-        </span>
-      </button>
-
-      <nuxt-link v-if="user" class="mx-1.5 flex items-center h-10" to="/search" aria-label="Search">
-        <span class="material-symbols text-2xl leading-none">search</span>
+      <nuxt-link v-if="user" class="flex items-center justify-center h-16 w-16 rounded-2xl bg-secondary/70 border border-border shadow-sm hover:bg-bg-hover/40" to="/search" aria-label="Search">
+        <span class="material-symbols text-4xl leading-none">search</span>
       </nuxt-link>
 
-      <button type="button" aria-label="Toggle side drawer" class="h-7 mx-1.5" @click="clickShowSideDrawer">
-        <span class="material-symbols" style="font-size: 1.75rem">menu</span>
+      <button type="button" aria-label="Toggle side drawer" class="h-16 w-16 rounded-2xl bg-secondary/70 border border-border shadow-sm hover:bg-bg-hover/40" @click="clickShowSideDrawer">
+        <span class="material-symbols text-4xl leading-none">menu</span>
       </button>
     </div>
   </div>
 </template>
 
 <script>
-import { AbsAudioPlayer } from '@/plugins/capacitor'
-
 export default {
-  data() {
-    return {
-      onCastAvailableUpdateListener: null
-    }
-  },
   computed: {
-    isCastAvailable: {
-      get() {
-        return this.$store.state.isCastAvailable
-      },
-      set(val) {
-        this.$store.commit('setCastAvailable', val)
-      }
-    },
     currentLibrary() {
       return this.$store.getters['libraries/getCurrentLibrary']
     },
@@ -74,19 +53,9 @@ export default {
     },
     username() {
       return this.user?.username || 'err'
-    },
-    isCasting() {
-      return this.$store.state.isCasting
     }
   },
   methods: {
-    castClick() {
-      if (this.$store.getters['getIsCurrentSessionLocal']) {
-        this.$eventBus.$emit('cast-local-item')
-        return
-      }
-      AbsAudioPlayer.requestSession()
-    },
     clickShowSideDrawer() {
       this.$store.commit('setShowSideDrawer', true)
     },
@@ -95,26 +64,18 @@ export default {
     },
     back() {
       window.history.back()
-    },
-    onCastAvailableUpdate(data) {
-      this.isCastAvailable = data && data.value
     }
-  },
-  async mounted() {
-    AbsAudioPlayer.getIsCastAvailable().then((data) => {
-      this.isCastAvailable = data && data.value
-    })
-    this.onCastAvailableUpdateListener = await AbsAudioPlayer.addListener('onCastAvailableUpdate', this.onCastAvailableUpdate)
-  },
-  beforeDestroy() {
-    this.onCastAvailableUpdateListener?.remove()
   }
 }
 </script>
 
 <style>
 #appbar {
-  box-shadow: 0px 5px 5px #11111155;
+  background:
+    linear-gradient(90deg, rgba(34, 192, 154, 0.2), transparent 34%),
+    rgb(var(--color-primary));
+  border-bottom: 1px solid rgba(var(--color-border), 0.8);
+  box-shadow: 0px 14px 30px rgba(0, 0, 0, 0.34);
 }
 .loader-dots div {
   animation-timing-function: cubic-bezier(0, 1, 1, 0);

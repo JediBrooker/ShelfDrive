@@ -132,7 +132,7 @@ export default {
       ctx.fillText('\ue900', 15, 36)
 
       // Top text
-      addText('audiobookshelf', '28px', 'normal', tanColor, '0px', 65, 28)
+      addText('ShelfDrive', '28px', 'normal', tanColor, '0px', 65, 28)
       addText(`${this.year} YEAR IN REVIEW`, '18px', 'bold', 'white', '1px', 65, 51)
 
       // Top left box
@@ -155,7 +155,7 @@ export default {
     share() {
       const base64Data = this.dataUrl.split(';base64,').pop()
       FileSharer.share({
-        filename: `audiobookshelf_my_${this.year}_short.png`,
+        filename: `shelfdrive_my_${this.year}_short.png`,
         contentType: 'image/png',
         base64Data
       }).catch((error) => {

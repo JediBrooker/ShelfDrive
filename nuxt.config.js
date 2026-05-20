@@ -6,7 +6,7 @@ export default {
   telemetry: false,
   env: {
     PROD: '1',
-    ANDROID_APP_URL: 'https://play.google.com/store/apps/details?id=com.audiobookshelf.app',
+    ANDROID_APP_URL: 'https://play.google.com/store/apps/details?id=com.jedibrooker.shelfdrive',
     IOS_APP_URL: ''
   },
 
@@ -15,7 +15,7 @@ export default {
   },
 
   head: {
-    title: 'Audiobookshelf',
+    title: 'ShelfDrive',
     htmlAttrs: {
       lang: 'en'
     },

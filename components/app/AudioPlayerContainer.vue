@@ -10,7 +10,6 @@
 
 <script>
 import { AbsAudioPlayer, AbsLogger } from '@/plugins/capacitor'
-import { Dialog } from '@capacitor/dialog'
 import CellularPermissionHelpers from '@/mixins/cellularPermissionHelpers'
 
 export default {
@@ -164,34 +163,6 @@ export default {
         this.$refs.audioPlayer.closePlayback()
       }
     },
-    castLocalItem() {
-      if (!this.serverLibraryItemId) {
-        this.$toast.error(`Cannot cast locally downloaded media`)
-      } else {
-        // Change to server library item
-        this.playServerLibraryItemAndCast(this.serverLibraryItemId, this.serverEpisodeId)
-      }
-    },
-    playServerLibraryItemAndCast(libraryItemId, episodeId) {
-      var playbackRate = 1
-      if (this.$refs.audioPlayer) {
-        playbackRate = this.$refs.audioPlayer.currentPlaybackRate || 1
-      }
-      AbsAudioPlayer.prepareLibraryItem({ libraryItemId, episodeId, playWhenReady: false, playbackRate })
-        .then((data) => {
-          if (data.error) {
-            const errorMsg = data.error || 'Failed to play'
-            this.$toast.error(errorMsg)
-          } else {
-            console.log('Library item play response', JSON.stringify(data))
-            AbsAudioPlayer.requestSession()
-          }
-        })
-        .catch((error) => {
-          console.error('Failed', error)
-          this.$toast.error('Failed to play')
-        })
-    },
     async playLibraryItem(payload) {
       await AbsLogger.info({ tag: 'AudioPlayerContainer', message: `playLibraryItem: Received play request for library item ${payload.libraryItemId} ${payload.episodeId ? `episode ${payload.episodeId}` : ''}` })
       const libraryItemId = payload.libraryItemId
@@ -208,21 +179,8 @@ export default {
         }
       }
 
-      // When playing local library item and can also play this item from the server
-      //   then store the server library item id so it can be used if a cast is made
       const serverLibraryItemId = payload.serverLibraryItemId || null
       const serverEpisodeId = payload.serverEpisodeId || null
-
-      if (isLocal && this.$store.state.isCasting) {
-        const { value } = await Dialog.confirm({
-          title: 'Warning',
-          message: `Cannot cast downloaded media items. Confirm to close cast and play on your device.`
-        })
-        if (!value) {
-          this.$store.commit('setPlayerDoneStartingPlayback')
-          return
-        }
-      }
 
       // if already playing this item then jump to start time
       if (this.$store.getters['getIsMediaStreaming'](libraryItemId, episodeId)) {
@@ -448,7 +406,6 @@ export default {
     this.$eventBus.$on('play-item', this.playLibraryItem)
     this.$eventBus.$on('pause-item', this.pauseItem)
     this.$eventBus.$on('close-stream', this.closeStreamOnly)
-    this.$eventBus.$on('cast-local-item', this.castLocalItem)
     this.$eventBus.$on('user-settings', this.settingsUpdated)
     this.$eventBus.$on('playback-time-update', this.playbackTimeUpdate)
     this.$eventBus.$on('device-focus-update', this.deviceFocused)
@@ -464,7 +421,6 @@ export default {
     this.$eventBus.$off('play-item', this.playLibraryItem)
     this.$eventBus.$off('pause-item', this.pauseItem)
     this.$eventBus.$off('close-stream', this.closeStreamOnly)
-    this.$eventBus.$off('cast-local-item', this.castLocalItem)
     this.$eventBus.$off('user-settings', this.settingsUpdated)
     this.$eventBus.$off('playback-time-update', this.playbackTimeUpdate)
     this.$eventBus.$off('device-focus-update', this.deviceFocused)

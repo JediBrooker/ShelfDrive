@@ -5,6 +5,7 @@ const val CUSTOM_ACTION_JUMP_BACKWARD = "com.audiobookshelf.customAction.jump_ba
 const val CUSTOM_ACTION_SKIP_FORWARD = "com.audiobookshelf.customAction.skip_forward";
 const val CUSTOM_ACTION_SKIP_BACKWARD = "com.audiobookshelf.customAction.skip_backward";
 const val CUSTOM_ACTION_CHANGE_SPEED = "com.audiobookshelf.customAction.change_speed";
+const val MEDIA_SESSION_SEEK_INTERVAL_MS = 30000L
 
 const val PLAYMETHOD_DIRECTPLAY = 0
 const val PLAYMETHOD_DIRECTSTREAM = 1
@@ -19,3 +20,5 @@ const val ANDROID_AUTO_SIMULATOR_PKG_NAME = "com.google.android.autosimulator"
 const val ANDROID_WEARABLE_PKG_NAME = "com.google.android.wearable.app"
 const val ANDROID_GSEARCH_PKG_NAME = "com.google.android.googlequicksearchbox"
 const val ANDROID_AUTOMOTIVE_PKG_NAME = "com.google.android.carassistant"
+const val ANDROID_CAR_MEDIA_PKG_NAME = "com.android.car.media"
+const val POLESTAR_LAUNCHER_PKG_NAME = "com.volvocars.launcher"

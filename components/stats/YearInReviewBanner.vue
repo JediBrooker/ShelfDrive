@@ -3,7 +3,7 @@
     <!-- hack to get icon fonts loaded on init -->
     <div class="h-0 w-0 overflow-hidden opacity-0">
       <span class="material-symbols">close</span>
-      <span class="abs-icons icon-audiobookshelf" />
+      <img src="/shelfdrive-logo.svg" alt="" class="h-8 w-8" />
     </div>
 
     <div class="flex items-center">

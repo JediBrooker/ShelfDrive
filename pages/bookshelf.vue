@@ -32,14 +32,14 @@ export default {
 
 <style>
 .main-content {
-  height: calc(100% - 72px);
-  max-height: calc(100% - 72px);
-  min-height: calc(100% - 72px);
+  height: calc(100% - 144px);
+  max-height: calc(100% - 144px);
+  min-height: calc(100% - 144px);
   max-width: 100vw;
 }
 .main-content.no-toolbar {
-  height: calc(100% - 36px);
-  max-height: calc(100% - 36px);
-  min-height: calc(100% - 36px);
+  height: calc(100% - 80px);
+  max-height: calc(100% - 80px);
+  min-height: calc(100% - 80px);
 }
 </style>

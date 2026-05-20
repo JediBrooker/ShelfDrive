@@ -181,12 +181,12 @@ export default {
      * Initiates the login process using OpenID via OAuth2.0.
      * 1. Verifying the server's address
      * 2. Calling oauthRequest() to obtain the special OpenID redirect URL
-     *      including a challenge and specying audiobookshelf://oauth as redirect URL
+     *      including a challenge and specifying shelfdrive://oauth as redirect URL
      * 3. Open this redirect URL in browser (which is a website of the SSO provider)
      *
      * When the browser is open, the following flow is expected:
-     * a. The user authenticates and the provider redirects back to custom URL audiobookshelf://oauth
-     * b. The app calls appUrlOpen() when `audiobookshelf://oauth` is called
+     * a. The user authenticates and the provider redirects back to custom URL shelfdrive://oauth
+     * b. The app calls appUrlOpen() when `shelfdrive://oauth` is called
      * b. appUrlOpen() handles the incoming URL and extracts the authorization code from GET parameter
      * c. oauthExchangeCodeForToken() exchanges the authorization code for an access token
      *
@@ -223,7 +223,7 @@ export default {
       let redirect_uri_param = redirectUrl.searchParams.get('redirect_uri')
       // Backwards compatability with 2.6.0
       if (this.serverConfig.version === '2.6.0') {
-        redirect_uri_param = 'audiobookshelf://oauth'
+        redirect_uri_param = 'shelfdrive://oauth'
       }
 
       if (!client_id || !scope || !state || !redirect_uri_param) {
@@ -245,7 +245,7 @@ export default {
       const buildUrl = `${host}${redirectUrl.pathname}?response_type=code` + `&client_id=${encodeURIComponent(client_id)}&scope=${encodeURIComponent(scope)}&state=${encodeURIComponent(state)}` + `&redirect_uri=${encodeURIComponent(redirect_uri_param)}` + `&code_challenge=${encodeURIComponent(this.oauth.challenge)}&code_challenge_method=S256`
 
       // example url for authentik
-      // const authURL = "https://authentik/application/o/authorize/?response_type=code&client_id=41cd96f...&redirect_uri=audiobookshelf%3A%2F%2Foauth&scope=openid%20openid%20email%20profile&state=asdds..."
+      // const authURL = "https://authentik/application/o/authorize/?response_type=code&client_id=41cd96f...&redirect_uri=shelfdrive%3A%2F%2Foauth&scope=openid%20openid%20email%20profile&state=asdds..."
 
       // Open the browser. The browser/identity provider in turn will redirect to an in-app link supplementing a code
       try {
@@ -289,7 +289,7 @@ export default {
       this.oauth.verifier = verifier
       this.oauth.challenge = challenge
 
-      let backendEndpoint = `${url}/auth/openid?code_challenge=${challenge}&code_challenge_method=S256&redirect_uri=${encodeURIComponent('audiobookshelf://oauth')}&client_id=${encodeURIComponent('Audiobookshelf-App')}&response_type=code`
+      let backendEndpoint = `${url}/auth/openid?code_challenge=${challenge}&code_challenge_method=S256&redirect_uri=${encodeURIComponent('shelfdrive://oauth')}&client_id=${encodeURIComponent('ShelfDrive')}&response_type=code`
       // Backwards compatability with 2.6.0
       if (this.serverConfig.version === '2.6.0') {
         backendEndpoint += '&isRest=true'
@@ -336,9 +336,9 @@ export default {
       // Handle the OAuth callback
       const urlObj = new URL(url)
 
-      // audiobookshelf://oauth?code...
+      // shelfdrive://oauth?code...
       // urlObj.hostname for iOS and urlObj.pathname for android
-      if (url.startsWith('audiobookshelf://oauth')) {
+      if (url.startsWith('shelfdrive://oauth')) {
         // Extract possible errors thrown by the SSO provider
         const authError = urlObj.searchParams.get('error')
         if (authError) {

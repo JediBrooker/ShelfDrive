@@ -7,7 +7,7 @@
     <div class="w-full flex justify-center relative">
       <div style="width: 0; transform: translateX(-50vw); overflow: visible">
         <div style="width: 150vw; overflow: hidden">
-          <div id="coverBg" style="filter: blur(5vw)">
+          <div id="coverBg">
             <covers-book-cover :library-item="libraryItem" :width="coverWidth" :book-cover-aspect-ratio="bookCoverAspectRatio" @imageLoaded="coverImageLoaded" />
           </div>
         </div>
@@ -50,20 +50,20 @@
 
         <!-- action buttons -->
         <div class="col-span-full">
-          <div v-if="showPlay || showRead" class="flex mt-4 -mx-1">
-            <ui-btn v-if="showPlay" color="success" class="flex items-center justify-center flex-grow mx-1" :loading="playerIsStartingForThisMedia" :padding-x="4" @click="playClick">
-              <span class="material-symbols text-2xl fill">{{ playerIsPlaying ? 'pause' : 'play_arrow' }}</span>
-              <span class="px-1 text-sm">{{ playerIsPlaying ? $strings.ButtonPause : isPodcast ? $strings.ButtonNextEpisode : hasLocal ? $strings.ButtonPlay : $strings.ButtonStream }}</span>
+          <div v-if="showPlay || showRead" class="flex mt-5 gap-3">
+            <ui-btn v-if="showPlay" color="success" class="item-action-btn flex items-center justify-center flex-grow" :loading="playerIsStartingForThisMedia" :padding-x="4" :padding-y="4" @click="playClick">
+              <span class="material-symbols text-4xl fill">{{ playerIsPlaying ? 'pause' : 'play_arrow' }}</span>
+              <span class="px-2 text-xl">{{ playerIsPlaying ? $strings.ButtonPause : isPodcast ? $strings.ButtonNextEpisode : hasLocal ? $strings.ButtonPlay : $strings.ButtonStream }}</span>
             </ui-btn>
-            <ui-btn v-if="showRead" color="info" class="flex items-center justify-center mx-1" :class="showPlay ? '' : 'flex-grow'" :padding-x="2" @click="readBook">
-              <span class="material-symbols text-2xl">auto_stories</span>
-              <span v-if="!showPlay" class="px-2 text-base">{{ $strings.ButtonRead }} {{ ebookFormat }}</span>
+            <ui-btn v-if="showRead" color="info" class="item-action-btn flex items-center justify-center" :class="showPlay ? 'item-square-btn' : 'flex-grow'" :padding-x="3" :padding-y="4" @click="readBook">
+              <span class="material-symbols text-4xl">auto_stories</span>
+              <span v-if="!showPlay" class="px-2 text-xl">{{ $strings.ButtonRead }} {{ ebookFormat }}</span>
             </ui-btn>
-            <ui-btn v-if="showDownload" :color="downloadItem ? 'warning' : 'primary'" class="flex items-center justify-center mx-1" :padding-x="2" @click="downloadClick">
-              <span class="material-symbols text-2xl" :class="downloadItem || startingDownload ? 'animate-pulse' : ''">{{ downloadItem || startingDownload ? 'downloading' : 'download' }}</span>
+            <ui-btn v-if="showDownload" :color="downloadItem ? 'warning' : 'primary'" class="item-action-btn item-square-btn flex items-center justify-center" :padding-x="3" :padding-y="4" @click="downloadClick">
+              <span class="material-symbols text-4xl" :class="downloadItem || startingDownload ? 'animate-pulse' : ''">{{ downloadItem || startingDownload ? 'downloading' : 'download' }}</span>
             </ui-btn>
-            <ui-btn color="primary" class="flex items-center justify-center mx-1" :padding-x="2" @click="moreButtonPress">
-              <span class="material-symbols text-2xl">more_vert</span>
+            <ui-btn color="primary" class="item-action-btn item-square-btn flex items-center justify-center" :padding-x="3" :padding-y="4" @click="moreButtonPress">
+              <span class="material-symbols text-4xl">more_vert</span>
             </ui-btn>
           </div>
           <ui-btn v-else-if="isMissing" color="error" :padding-x="4" small class="mt-4 flex items-center justify-center w-full" @click="clickMissingButton">
@@ -471,9 +471,6 @@ export default {
     episodes() {
       return this.media.episodes || []
     },
-    isCasting() {
-      return this.$store.state.isCasting
-    },
     coverWidth() {
       let width = this.windowWidth - 94
       if (width > 325) return 325
@@ -559,10 +556,7 @@ export default {
 
         this.episodeStartingPlayback = serverEpisodeId
         this.$store.commit('setPlayerIsStartingPlayback', serverEpisodeId)
-        if (serverEpisodeId && this.serverLibraryItemId && this.isCasting) {
-          // If casting and connected to server for local library item then send server library item id
-          this.$eventBus.$emit('play-item', { libraryItemId: this.serverLibraryItemId, episodeId: serverEpisodeId })
-        } else if (localEpisode) {
+        if (localEpisode) {
           this.$eventBus.$emit('play-item', { libraryItemId: this.localLibraryItem.id, episodeId: localEpisode.id, serverLibraryItemId: this.serverLibraryItemId, serverEpisodeId })
         } else {
           this.$eventBus.$emit('play-item', { libraryItemId: this.libraryItemId, episodeId })
@@ -571,10 +565,7 @@ export default {
         // Audiobook
         let libraryItemId = this.libraryItemId
 
-        // When casting use server library item
-        if (this.hasLocal && this.serverLibraryItemId && this.isCasting) {
-          libraryItemId = this.serverLibraryItemId
-        } else if (this.hasLocal) {
+        if (this.hasLocal) {
           libraryItemId = this.localLibraryItem.id
         }
 
@@ -800,6 +791,15 @@ export default {
   }
 }
 </script>
+
+<style>
+.item-action-btn {
+  min-height: 4.5rem;
+}
+.item-square-btn {
+  min-width: 4.5rem;
+}
+</style>
 
 <style>
 :root {

@@ -1,1 +1,1 @@
-Hörbuch- und Podcast-Player für Ihren selbst gehosteten Audiobookshelf-Server
+Unoffizieller Client fuer selbst gehostete Audiobookshelf-Server

@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.support.v4.media.session.MediaControllerCompat
+import android.util.Log
 import com.audiobookshelf.app.BuildConfig
 import com.audiobookshelf.app.R
 import com.bumptech.glide.Glide
@@ -48,12 +49,17 @@ class AbMediaDescriptionAdapter (private val controller: MediaControllerCompat, 
       currentIconUri = albumArtUri
 
       if (currentIconUri.toString().startsWith("content://")) {
-        currentBitmap = if (Build.VERSION.SDK_INT < 28) {
-          @Suppress("DEPRECATION")
-          MediaStore.Images.Media.getBitmap(playerNotificationService.contentResolver, currentIconUri)
-        } else {
-          val source: ImageDecoder.Source = ImageDecoder.createSource(playerNotificationService.contentResolver, currentIconUri!!)
-          ImageDecoder.decodeBitmap(source)
+        currentBitmap = try {
+          if (Build.VERSION.SDK_INT < 28) {
+            @Suppress("DEPRECATION")
+            MediaStore.Images.Media.getBitmap(playerNotificationService.contentResolver, currentIconUri)
+          } else {
+            val source: ImageDecoder.Source = ImageDecoder.createSource(playerNotificationService.contentResolver, currentIconUri!!)
+            ImageDecoder.decodeBitmap(source)
+          }
+        } catch (error: Exception) {
+          Log.e(tag, "Failed to decode content artwork", error)
+          null
         }
         currentBitmap
       } else {

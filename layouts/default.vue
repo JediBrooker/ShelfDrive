@@ -151,6 +151,9 @@ export default {
         // No last server config set
         this.attemptingConnection = false
         AbsLogger.info({ tag: 'default', message: 'attemptConnection: No last server config set' })
+        if (this.$route.name !== 'connect') {
+          this.$router.replace('/connect')
+        }
         return
       }
 
