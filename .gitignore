@@ -91,3 +91,8 @@ sw.*
 
 /resources/
 /android/app/release/
+
+# Release signing — never commit the keystore or its passwords
+/android/keystore.properties
+*.jks
+*.keystore

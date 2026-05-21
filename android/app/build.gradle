@@ -22,6 +22,14 @@ kotlin {
   jvmToolchain(17)
 }
 
+// Loads release signing config from keystore.properties (gitignored). See
+// keystore.properties.example for the expected keys.
+def keystorePropertiesFile = rootProject.file("keystore.properties")
+def keystoreProperties = new Properties()
+if (keystorePropertiesFile.exists()) {
+  keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
 android {
   namespace 'com.audiobookshelf.app'
   buildFeatures {
@@ -48,6 +56,17 @@ android {
       ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
     }
   }
+  signingConfigs {
+    release {
+      // No-ops if keystore.properties is absent (CI / debug-only builds).
+      if (keystorePropertiesFile.exists()) {
+        storeFile rootProject.file(keystoreProperties['storeFile'])
+        storePassword keystoreProperties['storePassword']
+        keyAlias keystoreProperties['keyAlias']
+        keyPassword keystoreProperties['keyPassword']
+      }
+    }
+  }
   buildTypes {
     debug {
       applicationIdSuffix ".debug"
@@ -56,8 +75,12 @@ android {
       proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
     }
     release {
-      minifyEnabled false
-      proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+      minifyEnabled true
+      shrinkResources true
+      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+      if (keystorePropertiesFile.exists()) {
+        signingConfig signingConfigs.release
+      }
     }
   }
 }

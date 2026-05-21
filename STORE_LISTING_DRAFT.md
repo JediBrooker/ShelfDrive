@@ -1,28 +1,99 @@
-# ShelfDrive Store Listing Draft
+# ShelfDrive — Play Store Listing Draft
 
-## App Name
+Single source of truth for the Google Play Console listing.
 
-ShelfDrive
+---
 
-## Short Description
+## App name
 
-Unofficial mobile and in-car client for self-hosted Audiobookshelf servers.
+**ShelfDrive**
 
-## Full Description
+## Short description (80 chars max)
 
-ShelfDrive is an independent, GPLv3-licensed client for connecting to your own Audiobookshelf server. It lets you browse and play audiobooks and podcasts from a server you control.
+> Audiobooks and podcasts from your self-hosted Audiobookshelf server, in the car.
 
-ShelfDrive does not provide audiobook, podcast, or other media content. You need access to an Audiobookshelf server to use the app.
+(78 chars)
 
-This app is not affiliated with, endorsed by, or published by the Audiobookshelf project or its maintainers.
+## Full description (4000 chars max)
 
-Source code and license notices are available at:
-https://github.com/JediBrooker/ShelfDrive
+> Play your own audiobooks and podcasts from a self-hosted Audiobookshelf server, designed for Android Automotive OS.
+>
+> ShelfDrive is an independent, open-source client for Audiobookshelf — the self-hosted audiobook and podcast server. Connect to your server once, and your library is available on the car's display: browse, resume, and listen safely while parked or driving.
+>
+> 🚗 BUILT FOR ANDROID AUTOMOTIVE OS
+>
+> • Native Car Media integration — browse from the OEM media template
+> • Resume playback from the home media tile
+> • Driver-distraction-optimized — text entry is parked-only, all browsing fits within distraction guidelines
+> • Steering-wheel button support — play/pause and configurable jump forward / backward
+>
+> 📚 YOUR LIBRARY, YOUR SERVER
+>
+> • Browse by Continue Listening, Recently Added, Libraries, and Discover
+> • Series and collections supported with cover art
+> • Local downloads play offline
+> • Cover art cached on-device for fast browse and reliable rendering
+>
+> ⚙️ CONFIGURABLE PLAYBACK
+>
+> • Adjustable jump forward / jump backward intervals (5s – 90s)
+> • Auto-rewind on resume (toggleable)
+> • Sleep timer with audio fade-out
+>
+> 🔒 PRIVACY
+>
+> • You provide the server. ShelfDrive does not host or stream any media itself.
+> • Sign-in credentials go directly to your Audiobookshelf server. No analytics, no third-party trackers.
+> • Open source under the GPLv3 license. Audit the code at github.com/JediBrooker/ShelfDrive
+>
+> ⚠️ REQUIRED
+>
+> You must have your own Audiobookshelf server running (audiobookshelf.org). This app does not provide any audiobook, podcast, or media content.
+>
+> Audiobookshelf and the Audiobookshelf project are not affiliated with ShelfDrive. This fork is published independently.
 
-## Review Notes
+(~1,850 chars — leaves room to grow)
 
-This is an independent fork of the GPLv3 Audiobookshelf mobile app with a distinct app name, package id, icon, and launcher identity. It connects only to user-provided Audiobookshelf servers and does not include media content.
+## Release notes for v0.1 (500 chars max)
 
-## Suggested Category
+> First release.
+>
+> • Browse and play your Audiobookshelf library from the Polestar / AAOS Car Media tile
+> • Real book covers in Continue, Recent, Libraries, Series, and Discover
+> • Configurable jump forward / backward (5–90 s)
+> • Sign in to your server from the in-car Settings (parked only)
+> • Resume from the home tile with full transport controls
 
-Music & Audio
+## Suggested category
+
+**Music & Audio**
+
+## Form factor
+
+- [x] Android Automotive OS
+- [ ] Phone (later)
+- [ ] Tablet
+- [ ] Wear OS
+
+## Content rating
+
+Self-rate via Google's IARC questionnaire:
+- No user-generated content surfaced by the app itself (content is on the user's server)
+- No ads
+- Result is expected to be **Everyone**
+
+## Privacy policy URL
+
+See `PRIVACY_POLICY.md` in this repo — host on GitHub Pages, e.g.
+`https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY.html`
+
+## Review notes (for the Google reviewer)
+
+> ShelfDrive is an independent open-source fork of the GPLv3 Audiobookshelf mobile app, repackaged for Android Automotive OS. It connects only to user-provided Audiobookshelf servers (https://audiobookshelf.org) and includes no media content itself.
+>
+> Driver Distraction Guidelines compliance:
+> • MediaBrowserService + MediaSession drives all in-car browse and playback through the OEM Car Media template.
+> • The only Activity exposed to the launcher is the SettingsActivity (ACTION_APPLICATION_PREFERENCES), which is marked `distractionOptimized="false"` so AAOS auto-hides it while the vehicle is in motion. Free-text inputs (server URL, username, password) are only reachable while parked.
+> • The legacy Vue WebView Activity does not have `category.CAR_LAUNCHER` and is not exposed as a car launcher entry point.
+>
+> Source: https://github.com/JediBrooker/ShelfDrive
