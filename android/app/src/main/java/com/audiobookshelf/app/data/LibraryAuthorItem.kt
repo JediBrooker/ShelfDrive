@@ -33,7 +33,10 @@ class LibraryAuthorItem(
   @JsonIgnore
   fun getPortraitUri(): Uri {
     if (imagePath == null) {
-      return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/" + R.drawable.md_account_outline)
+      // Named-form android.resource:// URI. Numeric-form (".../$resourceId")
+      // crashes Car Media's LocalImageFetcher with Resources$NotFoundException
+      // because its cross-process resolver only handles drawable/<name>.
+      return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/md_account_outline")
     }
 
     return Uri.parse("${DeviceManager.serverAddress}/api/authors/$id/image?token=${DeviceManager.token}")

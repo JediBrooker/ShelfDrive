@@ -110,6 +110,10 @@ class MainActivity : BridgeActivity() {
 
   override fun onResume() {
     super.onResume()
+    // Polestar/AAOS WebView occasionally returns from background with a stale
+    // surface that won't redraw until forced — repro: tap home, tap tile, get
+    // a black canvas. Posting requestLayout+invalidate after super.onResume
+    // schedules the redraw on the next frame and recovers the surface.
     val webView: WebView? = findViewById(R.id.webview)
     webView?.let { view ->
       view.post {

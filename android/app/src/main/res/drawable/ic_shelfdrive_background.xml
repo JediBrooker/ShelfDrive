@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Polestar orange adaptive-icon background. -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
-    <solid android:color="#11181C" />
+    <solid android:color="#FF7E2D" />
 </shape>

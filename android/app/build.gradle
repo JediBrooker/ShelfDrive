@@ -127,6 +127,9 @@ dependencies {
 
   // Jackson for JSON
   implementation 'com.fasterxml.jackson.module:jackson-module-kotlin:2.12.2'
+
+  // Material Components for AAOS-friendly settings UI (switches, dropdowns, etc.)
+  implementation 'com.google.android.material:material:1.12.0'
 }
 
 apply from: 'capacitor.build.gradle'

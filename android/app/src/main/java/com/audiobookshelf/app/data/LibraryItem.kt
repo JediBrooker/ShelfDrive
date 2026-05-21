@@ -50,8 +50,15 @@ class LibraryItem(
   @JsonIgnore
   fun getCoverUri(): Uri {
     if (media.coverPath == null) {
-      return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/" + R.drawable.icon)
+      // Named-form android.resource URI: see LibraryAuthorItem.getPortraitUri
+      // for why numeric form crashes Car Media's image loader.
+      return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
     }
+
+    // Prefer the locally-cached file (served via FileProvider) so cross-process
+    // readers like Car Media — which don't have our server auth — can render.
+    // Falls back to the remote URI on the first browse before the cache fills.
+    DeviceManager.coverCache?.cachedUri(id)?.let { return it }
 
     // As of v2.17.0 token is not needed with cover image requests
     if (DeviceManager.isServerVersionGreaterThanOrEqualTo("2.17.0")) {
@@ -59,6 +66,20 @@ class LibraryItem(
     }
 
     return Uri.parse("${DeviceManager.serverAddress}/api/items/$id/cover?token=${DeviceManager.token}")
+  }
+
+  /**
+   * Returns the remote (server) cover URL regardless of cache state, suitable
+   * for handing to CoverCache.fetchAsync. Returns null if the item has no cover.
+   */
+  @JsonIgnore
+  fun getRemoteCoverUrl(): String? {
+    if (media.coverPath == null) return null
+    return if (DeviceManager.isServerVersionGreaterThanOrEqualTo("2.17.0")) {
+      "${DeviceManager.serverAddress}/api/items/$id/cover"
+    } else {
+      "${DeviceManager.serverAddress}/api/items/$id/cover?token=${DeviceManager.token}"
+    }
   }
 
   @JsonIgnore

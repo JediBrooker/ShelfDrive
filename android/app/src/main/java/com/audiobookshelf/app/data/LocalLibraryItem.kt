@@ -51,9 +51,36 @@ class LocalLibraryItem(
   @JsonIgnore
   fun getCoverUri(ctx:Context): Uri {
     if (coverContentUrl?.startsWith("file:") == true) {
-      return FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", Uri.parse(coverContentUrl).toFile())
+      val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", Uri.parse(coverContentUrl).toFile())
+      // Same cross-process grant story as the server cover cache — Car Media
+      // can't read our FileProvider without an explicit FLAG_GRANT_READ_URI_PERMISSION.
+      grantLocalCoverReadPerms(ctx, uri)
+      return uri
     }
-    return if (coverContentUrl != null) Uri.parse(coverContentUrl) else Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/" + R.drawable.icon)
+    // Named-form android.resource URI: numeric form crashes Car Media (see
+    // LibraryAuthorItem.getPortraitUri for context).
+    return if (coverContentUrl != null) Uri.parse(coverContentUrl) else Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
+  }
+
+  private fun grantLocalCoverReadPerms(ctx: Context, uri: Uri) {
+    LOCAL_COVER_BROWSER_PACKAGES.forEach { pkg ->
+      try {
+        ctx.grantUriPermission(pkg, uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      } catch (_: Exception) {
+        // Package may not be installed on this device — ignore.
+      }
+    }
+  }
+
+  companion object {
+    // Mirrors CoverCache.KNOWN_BROWSER_PACKAGES — kept duplicated here to keep
+    // the data class free of a media-package dependency.
+    private val LOCAL_COVER_BROWSER_PACKAGES = listOf(
+      "com.android.car.media",
+      "com.google.android.projection.gearhead",
+      "com.google.android.carassistant",
+      "com.volvocars.launcher"
+    )
   }
 
   @JsonIgnore

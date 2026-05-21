@@ -29,6 +29,13 @@
         android:usesCleartextTraffic="true"
         android:largeHeap="true" >
 
+        <!-- Declare ShelfDrive as an Android Automotive media app so OEM
+             launchers (Polestar / Volvo / reference AAOS) render the home
+             tile as a media-control tile with transport controls. -->
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc" />
+
         <!-- Android app widget -->
         <receiver
           android:name="MediaPlayerWidget"
@@ -60,9 +67,6 @@
                 <category android:name="android.intent.category.CAR_LAUNCHER" />
             </intent-filter>
             <intent-filter>
-                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
-            </intent-filter>
-            <intent-filter>
                 <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
 
                 <category android:name="android.intent.category.DEFAULT" />
@@ -79,6 +83,17 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="true"
+            android:label="ShelfDrive Settings"
+            android:theme="@style/SettingsTheme" >
+            <intent-filter>
+                <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MEDIA_BUTTON" />
@@ -88,8 +103,15 @@
         <service
             android:name=".player.PlayerNotificationService"
             android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback" >
+            <!-- Exposed so OEM Car Media template hosts can bind and call
+                 onGetRoot / onLoadChildren. Caller packages are still gated
+                 inside PlayerNotificationService.isValid(). -->
+            <intent-filter>
+                <action android:name="android.media.browse.MediaBrowserService" />
+            </intent-filter>
+        </service>
 
         <provider
           android:name="androidx.core.content.FileProvider"

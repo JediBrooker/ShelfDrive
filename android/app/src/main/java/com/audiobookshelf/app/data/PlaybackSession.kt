@@ -174,11 +174,15 @@ class PlaybackSession(
       }
 
       return coverUri
-              ?: Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/" + R.drawable.icon)
+              ?: Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
     }
 
     if (coverPath == null)
-            return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/" + R.drawable.icon)
+            return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
+
+    // Prefer the on-disk cover cache (served via FileProvider) when available,
+    // so cross-process readers can fetch without our server auth.
+    libraryItemId?.let { DeviceManager.coverCache?.cachedUri(it)?.let { uri -> return uri } }
 
     // As of v2.17.0 token is not needed with cover image requests
     if (checkIsServerVersionGte("2.17.0")) {
@@ -225,8 +229,11 @@ class PlaybackSession(
                             coverUri.toString()
                     )
 
-    // Local covers get bitmap
-    if (localLibraryItem?.coverContentUrl != null) {
+    // Bake the cover bitmap into the metadata for any content:// URI (local
+     // download OR CoverCache-served server cover). This is what the Polestar
+     // home tile reads for its background — URI-only metadata renders as the
+     // plain app icon. Skip remote https:// to avoid blocking the main thread.
+    if (coverUri.scheme == "content" || coverUri.scheme == "file") {
       try {
         val bitmap =
                 if (Build.VERSION.SDK_INT < 28) {
@@ -239,7 +246,7 @@ class PlaybackSession(
         metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
         metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, bitmap)
       } catch (error: Exception) {
-        Log.e("PlaybackSession", "Failed to decode local cover bitmap", error)
+        Log.e("PlaybackSession", "Failed to decode cover bitmap from $coverUri", error)
       }
     }
 

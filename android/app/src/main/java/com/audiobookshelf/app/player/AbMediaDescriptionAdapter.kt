@@ -91,7 +91,7 @@ class AbMediaDescriptionAdapter (private val controller: MediaControllerCompat, 
 
         Glide.with(playerNotificationService)
           .asBitmap()
-          .load(Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/" + R.drawable.icon))
+          .load(Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon"))
           .submit()
           .get()
       }

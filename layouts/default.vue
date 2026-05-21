@@ -117,6 +117,23 @@ export default {
         this.$refs.streamContainer.streamOpen(stream)
       }
     },
+    // MainActivity stashes a pending route in Capacitor's SharedPreferences
+    // when launched via ACTION_APPLICATION_PREFERENCES (Car Media settings cog).
+    // Read it, navigate, and clear so a manual back-press won't bounce again.
+    async checkPendingDeepLink() {
+      try {
+        const { Preferences } = await import('@capacitor/preferences')
+        const { value } = await Preferences.get({ key: 'shelfdrive_pending_route' })
+        if (value && value !== this.$route.path) {
+          await Preferences.remove({ key: 'shelfdrive_pending_route' })
+          this.$router.replace(value)
+        } else if (value) {
+          await Preferences.remove({ key: 'shelfdrive_pending_route' })
+        }
+      } catch (e) {
+        console.warn('[default] checkPendingDeepLink failed', e)
+      }
+    },
     async loadSavedSettings() {
       const userSavedServerSettings = await this.$localStore.getServerSettings()
       if (userSavedServerSettings) {
@@ -383,11 +400,17 @@ export default {
 
       AbsLogger.info({ tag: 'default', message: 'mounted: fully initialized' })
       this.$eventBus.$emit('abs-ui-ready')
+
+      this.checkPendingDeepLink()
     }
+
+    // Re-check when MainActivity.onNewIntent fires for a singleTask relaunch.
+    window.addEventListener('shelfdrive:check-deep-link', this.checkPendingDeepLink)
   },
   beforeDestroy() {
     this.$eventBus.$off('change-lang', this.changeLanguage)
     document.removeEventListener('visibilitychange', this.visibilityChanged)
+    window.removeEventListener('shelfdrive:check-deep-link', this.checkPendingDeepLink)
     this.$socket.off('user_updated', this.userUpdated)
     this.$socket.off('user_media_progress_updated', this.userMediaProgressUpdated)
   }

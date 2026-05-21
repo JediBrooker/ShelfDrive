@@ -69,19 +69,19 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
   }
 
   override fun onSkipToPrevious() {
-    playerNotificationService.seekBackwardFromMediaSession()
+    playerNotificationService.jumpBackward()
   }
 
   override fun onSkipToNext() {
-    playerNotificationService.seekForwardFromMediaSession()
+    playerNotificationService.jumpForward()
   }
 
   override fun onFastForward() {
-    playerNotificationService.seekForwardFromMediaSession()
+    playerNotificationService.jumpForward()
   }
 
   override fun onRewind() {
-    playerNotificationService.seekBackwardFromMediaSession()
+    playerNotificationService.jumpBackward()
   }
 
   override fun onSeekTo(pos: Long) {
@@ -193,11 +193,11 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
           }
           KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> {
             Log.d(tag, "handleCallMediaButton: Media Fast Forward")
-            playerNotificationService.seekForwardFromMediaSession()
+            playerNotificationService.jumpForward()
           }
           KeyEvent.KEYCODE_MEDIA_REWIND -> {
             Log.d(tag, "handleCallMediaButton: Media Rewind")
-            playerNotificationService.seekBackwardFromMediaSession()
+            playerNotificationService.jumpBackward()
           }
         }
       }
@@ -228,10 +228,10 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
             handleMediaButtonClickCount()
           }
           KeyEvent.KEYCODE_MEDIA_NEXT -> {
-            playerNotificationService.seekForwardFromMediaSession()
+            playerNotificationService.jumpForward()
           }
           KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
-            playerNotificationService.seekBackwardFromMediaSession()
+            playerNotificationService.jumpBackward()
           }
           KeyEvent.KEYCODE_MEDIA_STOP -> {
             playerNotificationService.closePlayback()

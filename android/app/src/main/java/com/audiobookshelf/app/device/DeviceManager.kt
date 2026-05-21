@@ -10,6 +10,7 @@ import android.util.Log
 import com.audiobookshelf.app.MediaPlayerWidget
 import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.managers.DbManager
+import com.audiobookshelf.app.media.CoverCache
 import com.audiobookshelf.app.player.PlayerNotificationService
 import com.audiobookshelf.app.updateAppWidget
 
@@ -47,6 +48,11 @@ object DeviceManager {
     get() = serverConnectionConfig != null
 
   var widgetUpdater: WidgetEventEmitter? = null
+
+  // Lazily initialized by PlayerNotificationService.onCreate so getCoverUri()
+  // callers can opt into the on-disk cover cache (served via FileProvider) for
+  // Car Media browse rendering.
+  var coverCache: CoverCache? = null
 
   init {
     Log.d(tag, "Device Manager Singleton invoked")

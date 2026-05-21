@@ -1,7 +1,22 @@
 <template>
   <div class="w-full h-full px-4 py-8 overflow-y-auto">
+    <!-- Server connection -->
+    <p class="uppercase text-xs font-semibold text-fg-muted mb-2">{{ $strings.HeaderAccount }}</p>
+    <div v-if="serverAddress" class="py-3 flex items-center">
+      <p class="pr-4 w-36">{{ $strings.LabelHost }}</p>
+      <p class="text-fg break-all">{{ serverAddress }}</p>
+    </div>
+    <div v-if="username" class="py-3 flex items-center">
+      <p class="pr-4 w-36">{{ $strings.LabelUsername }}</p>
+      <p class="text-fg break-all">{{ username }}</p>
+    </div>
+    <div class="py-3">
+      <ui-btn v-if="serverAddress" color="primary" class="text-base" @click="switchServer">{{ $strings.ButtonSwitchServerUser }}</ui-btn>
+      <ui-btn v-else color="primary" class="text-base" @click="goToConnect">Connect to Server</ui-btn>
+    </div>
+
     <!-- Display settings -->
-    <p class="uppercase text-xs font-semibold text-fg-muted mb-2">{{ $strings.HeaderUserInterfaceSettings }}</p>
+    <p class="uppercase text-xs font-semibold text-fg-muted mb-2 mt-10">{{ $strings.HeaderUserInterfaceSettings }}</p>
     <div class="flex items-center py-3">
       <div class="w-10 flex justify-center" @click="toggleEnableAltView">
         <ui-toggle-switch v-model="enableBookshelfView" @input="saveSettings" />
@@ -342,6 +357,15 @@ export default {
     }
   },
   computed: {
+    serverConnectionConfig() {
+      return this.$store.state.user.serverConnectionConfig || null
+    },
+    serverAddress() {
+      return this.serverConnectionConfig?.address || ''
+    },
+    username() {
+      return this.$store.state.user.user?.username || this.serverConnectionConfig?.username || ''
+    },
     // This is flipped because alt view was the default until v0.9.61-beta
     enableBookshelfView: {
       get() {
@@ -454,6 +478,15 @@ export default {
     }
   },
   methods: {
+    async switchServer() {
+      await this.$hapticsImpact()
+      // Same flow as /account: log out (clears creds), then route to /connect.
+      await this.$store.dispatch('user/logout')
+      this.$router.push('/connect')
+    },
+    goToConnect() {
+      this.$router.push('/connect')
+    },
     sleepTimerLengthModalSelection(value) {
       this.settings.sleepTimerLength = value
       this.saveSettings()

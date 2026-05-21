@@ -44,13 +44,14 @@ class LibrarySeriesItem(
     }
 
     val mediaId = "__LIBRARY__${libraryId}__SERIES__${id}"
-    return MediaDescriptionCompat.Builder()
+    val builder = MediaDescriptionCompat.Builder()
       .setMediaId(mediaId)
       .setTitle(title)
-      //.setIconUri(getCoverUri())
       .setSubtitle("$audiobookCount books")
       .setExtras(extras)
-      .build()
+    // Use the first book's cover as the series cover.
+    books?.firstOrNull()?.let { builder.setIconUri(it.getCoverUri()) }
+    return builder.build()
   }
 
   @JsonIgnore

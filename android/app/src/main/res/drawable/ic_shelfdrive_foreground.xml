@@ -1,34 +1,68 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- ShelfDrive adaptive-icon foreground.
+     Composition: steering-wheel ring with Y-shape spokes (two arms up,
+     stem down), a centered book, and headphones draped over it.
+     108x108 viewport, content within the central 72x72 safe zone. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- Steering wheel outer ring (white annulus, 6dp thick). -->
     <path
-        android:fillColor="#18242B"
-        android:pathData="M27,20h54c5.5,0 10,4.5 10,10v58c0,5.5 -4.5,10 -10,10H27c-5.5,0 -10,-4.5 -10,-10V30c0,-5.5 4.5,-10 10,-10z" />
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M54,20 a34,34 0 1,1 0,68 a34,34 0 1,1 0,-68 z
+                          M54,26 a28,28 0 1,0 0,56 a28,28 0 1,0 0,-56 z" />
+
+    <!-- Y-spoke: top-left arm, 4dp thick, from center to inner ring (45deg). -->
     <path
-        android:strokeColor="#2E4148"
-        android:strokeWidth="3"
-        android:fillColor="@android:color/transparent"
-        android:pathData="M27,20h54c5.5,0 10,4.5 10,10v58c0,5.5 -4.5,10 -10,10H27c-5.5,0 -10,-4.5 -10,-10V30c0,-5.5 4.5,-10 10,-10z" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M52.6,55.4 L32.8,35.6 L35.6,32.8 L55.4,52.6 Z" />
+
+    <!-- Y-spoke: top-right arm. -->
     <path
-        android:fillColor="#22C09A"
-        android:pathData="M30,34h33c7.7,0 14,6.3 14,14v45H44c-7.7,0 -14,-6.3 -14,-14V34z" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M55.4,55.4 L75.2,35.6 L72.4,32.8 L52.6,52.6 Z" />
+
+    <!-- Y-spoke: bottom stem, vertical from center to inner ring. -->
     <path
-        android:fillColor="#F2BF5E"
-        android:pathData="M44,34h19c7.2,0 13,5.8 13,13v11H58c-7.7,0 -14,-6.3 -14,-14V34z" />
+        android:fillColor="#FFFFFF"
+        android:pathData="M52,54 L56,54 L56,82 L52,82 Z" />
+
+    <!-- Book cover (orange), 28x24 centered at (54,58) — slightly lower than
+         dead-center so the headphones have room to sit at the top. -->
     <path
-        android:strokeColor="#ECF7F3"
-        android:strokeLineCap="round"
-        android:strokeWidth="4.5"
-        android:fillColor="@android:color/transparent"
-        android:pathData="M42,67h25M42,78h25" />
+        android:fillColor="#FF7E2D"
+        android:pathData="M40,46 L68,46 L68,70 L40,70 Z" />
+
+    <!-- Book spine (white left edge of cover). -->
     <path
-        android:strokeColor="#ECF7F3"
-        android:strokeAlpha="0.9"
-        android:strokeLineCap="round"
+        android:fillColor="#FFFFFF"
+        android:pathData="M40,46 L43,46 L43,70 L40,70 Z" />
+
+    <!-- Three page lines on the cover (white). -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M46,52 L65,52 L65,53.5 L46,53.5 Z
+                          M46,57 L65,57 L65,58.5 L46,58.5 Z
+                          M46,62 L65,62 L65,63.5 L46,63.5 Z" />
+
+    <!-- Headphone band: stroked arc draped over the top of the book. -->
+    <path
+        android:strokeColor="#FFFFFF"
         android:strokeWidth="3.5"
         android:fillColor="@android:color/transparent"
-        android:pathData="M27,22v74M82,22v74" />
+        android:pathData="M34,52 C34,30 74,30 74,52" />
+
+    <!-- Left ear cup. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34,52 m-5,-1 a5,6 0 1,0 10,0 a5,6 0 1,0 -10,0 z" />
+
+    <!-- Right ear cup. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M74,52 m-5,-1 a5,6 0 1,0 10,0 a5,6 0 1,0 -10,0 z" />
 </vector>

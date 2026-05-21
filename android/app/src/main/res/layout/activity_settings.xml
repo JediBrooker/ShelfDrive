@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <!-- Toolbar matches the Car Media browse header: big left-aligned title,
+         optional back arrow on the left, orange divider underneath.
+         No background — inherits the diagonal stripes from Polestar's launcher. -->
+    <FrameLayout
+        android:id="@+id/toolbarContainer"
+        android:layout_width="match_parent"
+        android:layout_height="88dp">
+
+        <ImageView
+            android:id="@+id/backButton"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_gravity="center_vertical|start"
+            android:layout_marginStart="20dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_arrow_back_24"
+            android:scaleType="center"
+            android:contentDescription="Back" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_vertical|start"
+            android:layout_marginStart="92dp"
+            android:text="Settings"
+            android:textColor="#FFFFFF"
+            android:textSize="32sp"
+            android:fontFamily="sans-serif-medium" />
+    </FrameLayout>
+
+    <!-- Orange accent divider, matches the line under the ShelfDrive header. -->
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#FF7E2D" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:fillViewport="true"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <!-- Server section -->
+            <TextView
+                style="@style/SettingsSectionHeader"
+                android:text="SERVER" />
+
+            <LinearLayout style="@style/SettingsRow">
+                <TextView style="@style/SettingsRowLabel" android:text="Server URL" />
+                <EditText
+                    android:id="@+id/serverUrl"
+                    style="@style/SettingsRowInput"
+                    android:hint="https://example.com"
+                    android:inputType="textUri" />
+            </LinearLayout>
+
+            <View style="@style/SettingsRowDivider" />
+
+            <LinearLayout style="@style/SettingsRow">
+                <TextView style="@style/SettingsRowLabel" android:text="Username" />
+                <EditText
+                    android:id="@+id/username"
+                    style="@style/SettingsRowInput"
+                    android:inputType="text" />
+            </LinearLayout>
+
+            <View style="@style/SettingsRowDivider" />
+
+            <LinearLayout style="@style/SettingsRow">
+                <TextView style="@style/SettingsRowLabel" android:text="Password" />
+                <EditText
+                    android:id="@+id/password"
+                    style="@style/SettingsRowInput"
+                    android:inputType="textPassword" />
+            </LinearLayout>
+
+            <View style="@style/SettingsRowDivider" />
+
+            <TextView
+                android:id="@+id/serverStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:paddingTop="16dp"
+                android:textColor="#8AB4F8"
+                android:textSize="14sp"
+                android:text="" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:paddingTop="16dp"
+                android:paddingBottom="16dp"
+                android:gravity="end">
+
+                <TextView
+                    android:id="@+id/disconnectButton"
+                    style="@style/SettingsButton.Outlined"
+                    android:text="Disconnect" />
+
+                <Space
+                    android:layout_width="16dp"
+                    android:layout_height="match_parent" />
+
+                <TextView
+                    android:id="@+id/signInButton"
+                    style="@style/SettingsButton.Primary"
+                    android:text="Sign in" />
+            </LinearLayout>
+
+            <View style="@style/SettingsSectionDivider" />
+
+            <!-- Playback section -->
+            <TextView
+                style="@style/SettingsSectionHeader"
+                android:text="PLAYBACK" />
+
+            <LinearLayout style="@style/SettingsRow">
+                <TextView style="@style/SettingsRowLabel" android:text="Jump forward" />
+                <Spinner
+                    android:id="@+id/jumpForwardSpinner"
+                    style="@style/SettingsRowSpinner" />
+            </LinearLayout>
+
+            <View style="@style/SettingsRowDivider" />
+
+            <LinearLayout style="@style/SettingsRow">
+                <TextView style="@style/SettingsRowLabel" android:text="Jump backward" />
+                <Spinner
+                    android:id="@+id/jumpBackwardSpinner"
+                    style="@style/SettingsRowSpinner" />
+            </LinearLayout>
+
+            <View style="@style/SettingsRowDivider" />
+
+            <LinearLayout style="@style/SettingsRow">
+                <TextView style="@style/SettingsRowLabel" android:text="Disable auto-rewind" />
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/disableAutoRewindSwitch"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="48dp" />
+
+        </LinearLayout>
+
+    </ScrollView>
+
+</LinearLayout>

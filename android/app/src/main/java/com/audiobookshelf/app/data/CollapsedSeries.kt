@@ -1,8 +1,10 @@
 package com.audiobookshelf.app.data
 
 import android.content.Context
+import android.net.Uri
 import android.os.Bundle
 import android.support.v4.media.MediaDescriptionCompat
+import com.audiobookshelf.app.device.DeviceManager
 import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 
@@ -25,12 +27,20 @@ class CollapsedSeries(
     val extras = Bundle()
 
     val mediaId = "__LIBRARY__${libraryId}__SERIE__${id}"
-    return MediaDescriptionCompat.Builder()
+    val builder = MediaDescriptionCompat.Builder()
       .setMediaId(mediaId)
       .setTitle(title)
-      //.setIconUri(getCoverUri())
       .setSubtitle("${numBooks} books")
       .setExtras(extras)
-      .build()
+    // Synthesize a cover URL from the first library item id. CoverCache
+    // intercepts /api/items/<id>/cover URLs, so this benefits from caching
+    // and FileProvider serving like every other LibraryItem cover.
+    libraryItemIds.firstOrNull()?.let { firstId ->
+      val server = DeviceManager.serverAddress
+      if (server.isNotEmpty()) {
+        builder.setIconUri(Uri.parse("$server/api/items/$firstId/cover"))
+      }
+    }
+    return builder.build()
   }
 }

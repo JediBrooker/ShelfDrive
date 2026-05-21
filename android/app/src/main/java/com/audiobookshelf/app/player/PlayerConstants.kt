@@ -5,7 +5,6 @@ const val CUSTOM_ACTION_JUMP_BACKWARD = "com.audiobookshelf.customAction.jump_ba
 const val CUSTOM_ACTION_SKIP_FORWARD = "com.audiobookshelf.customAction.skip_forward";
 const val CUSTOM_ACTION_SKIP_BACKWARD = "com.audiobookshelf.customAction.skip_backward";
 const val CUSTOM_ACTION_CHANGE_SPEED = "com.audiobookshelf.customAction.change_speed";
-const val MEDIA_SESSION_SEEK_INTERVAL_MS = 30000L
 
 const val PLAYMETHOD_DIRECTPLAY = 0
 const val PLAYMETHOD_DIRECTSTREAM = 1

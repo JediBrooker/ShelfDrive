@@ -29,12 +29,13 @@ class LibraryCollection(
     val extras = Bundle()
 
     val mediaId = "__LIBRARY__${libraryId}__COLLECTION__${id}"
-    return MediaDescriptionCompat.Builder()
+    val builder = MediaDescriptionCompat.Builder()
       .setMediaId(mediaId)
       .setTitle(title)
-      //.setIconUri(getCoverUri())
       .setSubtitle("${bookCount} books")
       .setExtras(extras)
-      .build()
+    // Use the first book's cover as the collection cover.
+    books?.firstOrNull()?.let { builder.setIconUri(it.getCoverUri()) }
+    return builder.build()
   }
 }
