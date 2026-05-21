@@ -75,6 +75,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       private set
     var activeMediaSessionToken: MediaSessionCompat.Token? = null
       private set
+    var activeService: PlayerNotificationService? = null
+      private set
 
     fun setAutomotiveMediaBrowserEnabled(context: Context, enabled: Boolean) {
       val component = ComponentName(context, ShelfDriveMediaBridgeService::class.java)
@@ -205,6 +207,10 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   override fun onDestroy() {
     hasActivePlaybackSession = false
     activeMediaSessionToken = null
+    if (activeService == this) {
+      activeService = null
+    }
+    ShelfDriveMediaBridgeService.syncFromActivePlayback()
 
     try {
       val connectivityManager =
@@ -240,7 +246,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     Log.d(tag, "onCreate")
     super.onCreate()
     ctx = this
+    activeService = this
     setAutomotiveMediaBrowserEnabled(this, true)
+    ShelfDriveMediaBridgeService.syncFromActivePlayback()
 
     // Initialize Paper
     DbManager.initialize(ctx)
@@ -302,6 +310,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               isActive = true
             }
     activeMediaSessionToken = mediaSession.sessionToken
+    ShelfDriveMediaBridgeService.syncFromActivePlayback()
 
     val mediaController = MediaControllerCompat(ctx, mediaSession.sessionToken)
 
@@ -504,6 +513,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     currentPlaybackSession = playbackSession
     hasActivePlaybackSession = true
     setAutomotiveMediaBrowserEnabled(ctx, true)
+    ShelfDriveMediaBridgeService.syncFromActivePlayback()
 
     DeviceManager.setLastPlaybackSession(
             playbackSession
@@ -520,6 +530,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       Log.e(tag, "Invalid playback session no media items to play")
       currentPlaybackSession = null
       hasActivePlaybackSession = false
+      ShelfDriveMediaBridgeService.syncFromActivePlayback()
       return
     }
 
@@ -987,10 +998,12 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
     currentPlayer.volume = 1F
     currentPlayer.play()
+    ShelfDriveMediaBridgeService.syncFromActivePlayback()
   }
 
   fun pause() {
     currentPlayer.pause()
+    ShelfDriveMediaBridgeService.syncFromActivePlayback()
   }
 
   fun playPause(): Boolean {
@@ -1103,6 +1116,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
     currentPlaybackSession = null
     hasActivePlaybackSession = false
+    ShelfDriveMediaBridgeService.syncFromActivePlayback()
     mediaProgressSyncer.reset()
     clientEventEmitter?.onPlaybackClosed()
 

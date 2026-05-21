@@ -40,6 +40,7 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
 
   override fun onIsPlayingChanged(isPlaying: Boolean) {
     Log.d(tag, "onIsPlayingChanged to $isPlaying | ${playerNotificationService.getMediaPlayer()} | playbackState=${playerNotificationService.currentPlayer.playbackState}")
+    ShelfDriveMediaBridgeService.syncFromActivePlayback()
 
     val player = playerNotificationService.currentPlayer
 
@@ -116,6 +117,16 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
 
   override fun onEvents(player: Player, events: Player.Events) {
     Log.d(tag, "onEvents ${playerNotificationService.getMediaPlayer()} | ${events.size()}")
+
+    if (
+            events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) ||
+                    events.contains(Player.EVENT_IS_PLAYING_CHANGED) ||
+                    events.contains(Player.EVENT_POSITION_DISCONTINUITY) ||
+                    events.contains(Player.EVENT_MEDIA_METADATA_CHANGED) ||
+                    events.contains(Player.EVENT_PLAYLIST_METADATA_CHANGED)
+    ) {
+      ShelfDriveMediaBridgeService.syncFromActivePlayback()
+    }
 
     if (events.contains(Player.EVENT_POSITION_DISCONTINUITY)) {
       Log.d(tag, "EVENT_POSITION_DISCONTINUITY")
