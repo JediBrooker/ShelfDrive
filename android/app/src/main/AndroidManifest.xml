@@ -92,8 +92,8 @@
             android:foregroundServiceType="mediaPlayback" />
 
         <service
-            android:name=".player.ShelfDriveMediaBrowserService"
-            android:enabled="false"
+            android:name=".player.ShelfDriveMediaBridgeService"
+            android:enabled="true"
             android:exported="true"
             android:foregroundServiceType="mediaPlayback"
             android:icon="@mipmap/ic_launcher"

@@ -71,11 +71,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     var isUnmeteredNetwork = false
     var hasNetworkConnectivity = false // Not 100% reliable has internet
     var isSwitchingPlayer = false // Used when switching between cast player and exoplayer
+    var hasActivePlaybackSession = false
+      private set
     var activeMediaSessionToken: MediaSessionCompat.Token? = null
       private set
 
     fun setAutomotiveMediaBrowserEnabled(context: Context, enabled: Boolean) {
-      val component = ComponentName(context, ShelfDriveMediaBrowserService::class.java)
+      val component = ComponentName(context, ShelfDriveMediaBridgeService::class.java)
       val state =
               if (enabled) {
                 PackageManager.COMPONENT_ENABLED_STATE_ENABLED
@@ -201,7 +203,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   // detach player
   override fun onDestroy() {
-    setAutomotiveMediaBrowserEnabled(this, false)
+    hasActivePlaybackSession = false
     activeMediaSessionToken = null
 
     try {
@@ -238,6 +240,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     Log.d(tag, "onCreate")
     super.onCreate()
     ctx = this
+    setAutomotiveMediaBrowserEnabled(this, true)
 
     // Initialize Paper
     DbManager.initialize(ctx)
@@ -499,6 +502,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
 
     currentPlaybackSession = playbackSession
+    hasActivePlaybackSession = true
     setAutomotiveMediaBrowserEnabled(ctx, true)
 
     DeviceManager.setLastPlaybackSession(
@@ -515,7 +519,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     if (mediaItems.isEmpty()) {
       Log.e(tag, "Invalid playback session no media items to play")
       currentPlaybackSession = null
-      setAutomotiveMediaBrowserEnabled(ctx, false)
+      hasActivePlaybackSession = false
       return
     }
 
@@ -1098,7 +1102,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
 
     currentPlaybackSession = null
-    setAutomotiveMediaBrowserEnabled(ctx, false)
+    hasActivePlaybackSession = false
     mediaProgressSyncer.reset()
     clientEventEmitter?.onPlaybackClosed()
 
