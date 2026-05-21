@@ -64,7 +64,10 @@
                 <action android:name="android.intent.action.MAIN" />
 
                 <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="android.intent.category.CAR_LAUNCHER" />
+                <!-- CAR_LAUNCHER intentionally omitted: the Vue WebView is not
+                     distraction-optimized so it can't be a car launcher entry.
+                     On AAOS the entry points are the media tile (browse via
+                     MediaBrowserService) and the settings cog. -->
             </intent-filter>
             <intent-filter>
                 <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
@@ -88,6 +91,13 @@
             android:exported="true"
             android:label="ShelfDrive Settings"
             android:theme="@style/SettingsTheme" >
+            <!-- Not distraction-optimized: this activity has free-text inputs
+                 (server URL / username / password) which AAOS Driver Distraction
+                 Guidelines prohibit while the vehicle is in motion. AAOS will
+                 auto-hide this activity while moving; users must be parked. -->
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="false" />
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
                 <category android:name="android.intent.category.DEFAULT" />

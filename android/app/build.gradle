@@ -103,13 +103,11 @@ dependencies {
     implementation project(':exoplayer-library-core')
     implementation project(':exoplayer-library-ui')
     implementation project(':exoplayer-extension-mediasession')
-    implementation project(':exoplayer-extension-cast')
     implementation project(':exoplayer-hls')
   } else {
     implementation "com.google.android.exoplayer:exoplayer-core:$exoplayer_version"
     implementation "com.google.android.exoplayer:exoplayer-ui:$exoplayer_version"
     implementation "com.google.android.exoplayer:extension-mediasession:$exoplayer_version"
-    implementation "com.google.android.exoplayer:extension-cast:$exoplayer_version"
     implementation "com.google.android.exoplayer:exoplayer-hls:$exoplayer_version"
   }
 
@@ -130,6 +128,11 @@ dependencies {
 
   // Material Components for AAOS-friendly settings UI (switches, dropdowns, etc.)
   implementation 'com.google.android.material:material:1.12.0'
+
+  // MediaRouter provides ic_media_play_dark / ic_media_pause_dark drawables used
+  // by the home-screen widget. Previously pulled in transitively via the now-removed
+  // exoplayer extension-cast dependency.
+  implementation 'androidx.mediarouter:mediarouter:1.7.0'
 }
 
 apply from: 'capacitor.build.gradle'

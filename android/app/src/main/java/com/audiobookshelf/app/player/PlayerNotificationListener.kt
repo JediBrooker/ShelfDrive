@@ -43,13 +43,6 @@ class PlayerNotificationListener(var playerNotificationService:PlayerNotificatio
       playerNotificationService.stopSelf()
     } else {
       Log.d(tag, "onNotificationCancelled not dismissed by user")
-
-      if (PlayerNotificationService.isSwitchingPlayer) {
-        // When switching from cast player to exo player and vice versa the notification is cancelled and posted again
-          // so we don't want to cancel the playback during this switch
-        Log.d(tag, "PNS is switching player")
-        PlayerNotificationService.isSwitchingPlayer = false
-      }
     }
     isForegroundService = false
   }

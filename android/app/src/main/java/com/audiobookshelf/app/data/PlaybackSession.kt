@@ -18,9 +18,6 @@ import com.fasterxml.jackson.annotation.JsonIgnore
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.google.android.exoplayer2.MediaItem
 import com.google.android.exoplayer2.MediaMetadata
-import com.google.android.gms.cast.MediaInfo
-import com.google.android.gms.cast.MediaQueueItem
-import com.google.android.gms.common.images.WebImage
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 class PlaybackSession(
@@ -281,79 +278,15 @@ class PlaybackSession(
       val mediaUri = this.getContentUri(audioTrack)
       val mimeType = audioTrack.mimeType
 
-      val mediaItemBuilder =
+      val mediaItem =
               MediaItem.Builder()
                       .setUri(mediaUri)
                       .setMediaMetadata(mediaMetadata)
                       .setMimeType(mimeType)
-      if (!isLocal) {
-        mediaItemBuilder.setTag(getQueueItem(audioTrack)) // Queue item used only by the dormant Cast player
-      }
-      val mediaItem = mediaItemBuilder.build()
+                      .build()
       mediaItems.add(mediaItem)
     }
     return mediaItems
-  }
-
-  @JsonIgnore
-  fun getCastMediaMetadata(audioTrack: AudioTrack): com.google.android.gms.cast.MediaMetadata {
-    val castMetadata =
-            com.google.android.gms.cast.MediaMetadata(
-                    com.google.android.gms.cast.MediaMetadata.MEDIA_TYPE_AUDIOBOOK_CHAPTER
-            )
-
-    // As of v2.17.0 token is not needed with cover image requests
-    val coverUri = if (checkIsServerVersionGte("2.17.0")) {
-      Uri.parse("$serverAddress/api/items/$libraryItemId/cover")
-    } else {
-      Uri.parse("$serverAddress/api/items/$libraryItemId/cover?token=${DeviceManager.token}")
-    }
-
-    // Cast always uses server cover uri
-    coverPath?.let {
-      castMetadata.addImage(WebImage(coverUri))
-    }
-
-    castMetadata.putString(com.google.android.gms.cast.MediaMetadata.KEY_TITLE, displayTitle ?: "")
-    castMetadata.putString(
-            com.google.android.gms.cast.MediaMetadata.KEY_ARTIST,
-            displayAuthor ?: ""
-    )
-    castMetadata.putString(
-            com.google.android.gms.cast.MediaMetadata.KEY_ALBUM_TITLE,
-            displayAuthor ?: ""
-    )
-    castMetadata.putString(
-            com.google.android.gms.cast.MediaMetadata.KEY_CHAPTER_TITLE,
-            audioTrack.title
-    )
-
-    castMetadata.putInt(
-            com.google.android.gms.cast.MediaMetadata.KEY_TRACK_NUMBER,
-            audioTrack.index
-    )
-    return castMetadata
-  }
-
-  @JsonIgnore
-  fun getQueueItem(audioTrack: AudioTrack): MediaQueueItem {
-    val castMetadata = getCastMediaMetadata(audioTrack)
-
-    val mediaUri = getContentUri(audioTrack)
-
-    val mediaInfo =
-            MediaInfo.Builder(mediaUri.toString())
-                    .apply {
-                      setContentUrl(mediaUri.toString())
-                      setContentType(audioTrack.mimeType)
-                      setMetadata(castMetadata)
-                      setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-                    }
-                    .build()
-
-    return MediaQueueItem.Builder(mediaInfo)
-            .apply { setPlaybackDuration(audioTrack.duration) }
-            .build()
   }
 
   @JsonIgnore

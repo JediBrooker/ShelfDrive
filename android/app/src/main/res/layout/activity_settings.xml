@@ -52,6 +52,20 @@
             android:layout_height="wrap_content"
             android:orientation="vertical">
 
+            <!-- Parked-only hint: this Activity is marked non-DO, so AAOS
+                 will hide it while driving. Surface that in the UI too. -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="32dp"
+                android:layout_marginEnd="32dp"
+                android:layout_marginTop="20dp"
+                android:padding="16dp"
+                android:background="#1F262B"
+                android:textColor="#FF7E2D"
+                android:textSize="15sp"
+                android:text="Sign-in and settings changes are only available while parked." />
+
             <!-- Server section -->
             <TextView
                 style="@style/SettingsSectionHeader"
