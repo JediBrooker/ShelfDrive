@@ -2,10 +2,8 @@ package com.audiobookshelf.app.player
 
 import android.annotation.SuppressLint
 import android.app.*
-import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.ImageDecoder
@@ -71,28 +69,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     var isUnmeteredNetwork = false
     var hasNetworkConnectivity = false // Not 100% reliable has internet
     var isSwitchingPlayer = false // Used when switching between cast player and exoplayer
-    var hasActivePlaybackSession = false
-      private set
-    var activeMediaSessionToken: MediaSessionCompat.Token? = null
-      private set
-    var activeService: PlayerNotificationService? = null
-      private set
-
-    fun setAutomotiveMediaBrowserEnabled(context: Context, enabled: Boolean) {
-      val component = ComponentName(context, ShelfDriveMediaBridgeService::class.java)
-      val state =
-              if (enabled) {
-                PackageManager.COMPONENT_ENABLED_STATE_ENABLED
-              } else {
-                PackageManager.COMPONENT_ENABLED_STATE_DISABLED
-              }
-
-      context.packageManager.setComponentEnabledSetting(
-              component,
-              state,
-              PackageManager.DONT_KILL_APP
-      )
-    }
   }
 
   private val tag = "PlayerNotificationServ"
@@ -205,13 +181,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   // detach player
   override fun onDestroy() {
-    hasActivePlaybackSession = false
-    activeMediaSessionToken = null
-    if (activeService == this) {
-      activeService = null
-    }
-    ShelfDriveMediaBridgeService.syncFromActivePlayback()
-
     try {
       val connectivityManager =
               getSystemService(ConnectivityManager::class.java) as ConnectivityManager
@@ -246,9 +215,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     Log.d(tag, "onCreate")
     super.onCreate()
     ctx = this
-    activeService = this
-    setAutomotiveMediaBrowserEnabled(this, true)
-    ShelfDriveMediaBridgeService.syncFromActivePlayback()
 
     // Initialize Paper
     DbManager.initialize(ctx)
@@ -309,8 +275,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               setSessionActivity(sessionActivityPendingIntent)
               isActive = true
             }
-    activeMediaSessionToken = mediaSession.sessionToken
-    ShelfDriveMediaBridgeService.syncFromActivePlayback()
 
     val mediaController = MediaControllerCompat(ctx, mediaSession.sessionToken)
 
@@ -511,9 +475,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
 
     currentPlaybackSession = playbackSession
-    hasActivePlaybackSession = true
-    setAutomotiveMediaBrowserEnabled(ctx, true)
-    ShelfDriveMediaBridgeService.syncFromActivePlayback()
 
     DeviceManager.setLastPlaybackSession(
             playbackSession
@@ -529,8 +490,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     if (mediaItems.isEmpty()) {
       Log.e(tag, "Invalid playback session no media items to play")
       currentPlaybackSession = null
-      hasActivePlaybackSession = false
-      ShelfDriveMediaBridgeService.syncFromActivePlayback()
       return
     }
 
@@ -998,12 +957,10 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
     currentPlayer.volume = 1F
     currentPlayer.play()
-    ShelfDriveMediaBridgeService.syncFromActivePlayback()
   }
 
   fun pause() {
     currentPlayer.pause()
-    ShelfDriveMediaBridgeService.syncFromActivePlayback()
   }
 
   fun playPause(): Boolean {
@@ -1115,8 +1072,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
 
     currentPlaybackSession = null
-    hasActivePlaybackSession = false
-    ShelfDriveMediaBridgeService.syncFromActivePlayback()
     mediaProgressSyncer.reset()
     clientEventEmitter?.onPlaybackClosed()
 
