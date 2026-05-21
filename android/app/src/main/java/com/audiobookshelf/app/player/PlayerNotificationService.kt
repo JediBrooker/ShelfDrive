@@ -203,12 +203,29 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     super.onDestroy()
   }
 
-  // removing service when user swipe out our app
+  // Keep audiobook playback independent from the visible app task. Some car launchers
+  // report task removal when returning home, so only stop an idle service here.
   override fun onTaskRemoved(rootIntent: Intent?) {
     super.onTaskRemoved(rootIntent)
     Log.d(tag, "onTaskRemoved")
 
+    if (shouldKeepPlaybackServiceAlive()) {
+      Log.d(tag, "onTaskRemoved: keeping background playback service alive")
+      return
+    }
+
     stopSelf()
+  }
+
+  private fun shouldKeepPlaybackServiceAlive(): Boolean {
+    if (currentPlaybackSession == null || !this::currentPlayer.isInitialized) {
+      return false
+    }
+
+    return currentPlayer.mediaItemCount > 0 ||
+            currentPlayer.isPlaying ||
+            currentPlayer.playbackState == Player.STATE_READY ||
+            currentPlayer.playbackState == Player.STATE_BUFFERING
   }
 
   override fun onCreate() {
