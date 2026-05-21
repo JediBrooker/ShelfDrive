@@ -2,8 +2,10 @@ package com.audiobookshelf.app.player
 
 import android.annotation.SuppressLint
 import android.app.*
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.ImageDecoder
@@ -69,6 +71,24 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     var isUnmeteredNetwork = false
     var hasNetworkConnectivity = false // Not 100% reliable has internet
     var isSwitchingPlayer = false // Used when switching between cast player and exoplayer
+    var activeMediaSessionToken: MediaSessionCompat.Token? = null
+      private set
+
+    fun setAutomotiveMediaBrowserEnabled(context: Context, enabled: Boolean) {
+      val component = ComponentName(context, ShelfDriveMediaBrowserService::class.java)
+      val state =
+              if (enabled) {
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+              } else {
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+              }
+
+      context.packageManager.setComponentEnabledSetting(
+              component,
+              state,
+              PackageManager.DONT_KILL_APP
+      )
+    }
   }
 
   private val tag = "PlayerNotificationServ"
@@ -181,6 +201,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   // detach player
   override fun onDestroy() {
+    setAutomotiveMediaBrowserEnabled(this, false)
+    activeMediaSessionToken = null
+
     try {
       val connectivityManager =
               getSystemService(ConnectivityManager::class.java) as ConnectivityManager
@@ -275,6 +298,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               setSessionActivity(sessionActivityPendingIntent)
               isActive = true
             }
+    activeMediaSessionToken = mediaSession.sessionToken
 
     val mediaController = MediaControllerCompat(ctx, mediaSession.sessionToken)
 
@@ -475,6 +499,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
 
     currentPlaybackSession = playbackSession
+    setAutomotiveMediaBrowserEnabled(ctx, true)
+
     DeviceManager.setLastPlaybackSession(
             playbackSession
     ) // Save playback session to use when app is closed
@@ -489,6 +515,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     if (mediaItems.isEmpty()) {
       Log.e(tag, "Invalid playback session no media items to play")
       currentPlaybackSession = null
+      setAutomotiveMediaBrowserEnabled(ctx, false)
       return
     }
 
@@ -1071,6 +1098,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
 
     currentPlaybackSession = null
+    setAutomotiveMediaBrowserEnabled(ctx, false)
     mediaProgressSyncer.reset()
     clientEventEmitter?.onPlaybackClosed()
 
