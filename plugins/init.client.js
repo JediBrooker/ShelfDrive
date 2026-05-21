@@ -1,7 +1,6 @@
 import Vue from 'vue'
 import vClickOutside from 'v-click-outside'
 import { App } from '@capacitor/app'
-import { Dialog } from '@capacitor/dialog'
 import { AbsFileSystem } from '@/plugins/capacitor'
 import { StatusBar, Style } from '@capacitor/status-bar'
 import { Clipboard } from '@capacitor/clipboard'
@@ -313,13 +312,7 @@ export default ({ store, app }, inject) => {
       return
     }
     if (!canGoBack) {
-      const { value } = await Dialog.confirm({
-        title: eventBus.$strings.HeaderConfirm,
-        message: eventBus.$strings.MessageConfirmAppExit
-      })
-      if (value) {
-        App.exitApp()
-      }
+      await App.minimizeApp()
     } else {
       window.history.back()
     }

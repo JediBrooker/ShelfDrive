@@ -28,6 +28,7 @@ import androidx.core.content.ContextCompat
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.utils.MediaConstants
 import com.audiobookshelf.app.BuildConfig
+import com.audiobookshelf.app.MainActivity
 import com.audiobookshelf.app.R
 import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.data.DeviceInfo
@@ -255,10 +256,19 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               createNotificationChannel(channelId, channelName)
             } else ""
 
-    val sessionActivityPendingIntent =
-            packageManager?.getLaunchIntentForPackage(packageName)?.let { sessionIntent ->
-              PendingIntent.getActivity(this, 0, sessionIntent, PendingIntent.FLAG_IMMUTABLE)
+    val sessionActivityIntent =
+            Intent(this, MainActivity::class.java).apply {
+              action = Intent.ACTION_MAIN
+              addCategory(Intent.CATEGORY_LAUNCHER)
+              flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
+    val sessionActivityPendingIntent =
+            PendingIntent.getActivity(
+                    this,
+                    0,
+                    sessionActivityIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
 
     mediaSession =
             MediaSessionCompat(this, tag).apply {
