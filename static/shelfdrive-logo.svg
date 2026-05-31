@@ -1,9 +1,27 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-labelledby="title">
   <title id="title">ShelfDrive</title>
-  <rect width="256" height="256" rx="56" fill="#11181c"/>
-  <path d="M62 71c0-10 8-18 18-18h96c10 0 18 8 18 18v114c0 10-8 18-18 18H80c-10 0-18-8-18-18V71Z" fill="#18242b" stroke="#2e4148" stroke-width="6"/>
-  <path d="M85 80h58c14 0 25 11 25 25v91H110c-14 0-25-11-25-25V80Z" fill="#22c09a"/>
-  <path d="M111 80h34c13 0 23 10 23 23v21h-33c-13 0-24-11-24-24V80Z" fill="#f2bf5e"/>
-  <path d="M105 143h45M105 163h45" stroke="#ecf7f3" stroke-width="9" stroke-linecap="round"/>
-  <path d="M79 57v146M178 57v146" stroke="#ecf7f3" stroke-width="7" stroke-linecap="round" opacity=".9"/>
+  <!-- Orange rounded-square background, matching the launcher / Play icon. -->
+  <rect width="108" height="108" rx="24" fill="#FF7E2D"/>
+  <!-- Steering wheel outer ring (white annulus). -->
+  <path fill="#FFFFFF" fill-rule="evenodd"
+        d="M54,20 a34,34 0 1,1 0,68 a34,34 0 1,1 0,-68 z
+           M54,26 a28,28 0 1,0 0,56 a28,28 0 1,0 0,-56 z"/>
+  <!-- Y-spokes: two upper arms + bottom stem. -->
+  <path fill="#FFFFFF" d="M52.6,55.4 L32.8,35.6 L35.6,32.8 L55.4,52.6 Z"/>
+  <path fill="#FFFFFF" d="M55.4,55.4 L75.2,35.6 L72.4,32.8 L52.6,52.6 Z"/>
+  <path fill="#FFFFFF" d="M52,54 L56,54 L56,82 L52,82 Z"/>
+  <!-- Book cover (orange) over the wheel center. -->
+  <path fill="#FF7E2D" d="M40,46 L68,46 L68,70 L40,70 Z"/>
+  <!-- Book spine (white left edge). -->
+  <path fill="#FFFFFF" d="M40,46 L43,46 L43,70 L40,70 Z"/>
+  <!-- Three page lines. -->
+  <path fill="#FFFFFF"
+        d="M46,52 L65,52 L65,53.5 L46,53.5 Z
+           M46,57 L65,57 L65,58.5 L46,58.5 Z
+           M46,62 L65,62 L65,63.5 L46,63.5 Z"/>
+  <!-- Headphone band draped over the top. -->
+  <path fill="none" stroke="#FFFFFF" stroke-width="3.5" d="M34,52 C34,30 74,30 74,52"/>
+  <!-- Ear cups. -->
+  <path fill="#FFFFFF" d="M34,52 m-5,-1 a5,6 0 1,0 10,0 a5,6 0 1,0 -10,0 z"/>
+  <path fill="#FFFFFF" d="M74,52 m-5,-1 a5,6 0 1,0 10,0 a5,6 0 1,0 -10,0 z"/>
 </svg>
