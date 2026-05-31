@@ -6,7 +6,7 @@
 
     <uses-feature
         android:name="android.hardware.type.automotive"
-        android:required="false" />
+        android:required="true" />
 
     <!-- Permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -29,11 +29,15 @@
         android:usesCleartextTraffic="true"
         android:largeHeap="true" >
 
-        <!-- Declare ShelfDrive as an Android Automotive media app so OEM
+        <!-- Declare ShelfDrive as an Android Automotive OS media app so OEM
              launchers (Polestar / Volvo / reference AAOS) render the home
-             tile as a media-control tile with transport controls. -->
+             tile as a media-control tile with transport controls.
+             NOTE: this is the AAOS metadata `com.android.automotive` — NOT the
+             Android Auto `com.google.android.gms.car.application`. Play rejects
+             an AAB that declares the automotive uses-feature AND the Android
+             Auto metadata together; a native AAOS app must use only this. -->
         <meta-data
-            android:name="com.google.android.gms.car.application"
+            android:name="com.android.automotive"
             android:resource="@xml/automotive_app_desc" />
 
         <!-- Android app widget -->
