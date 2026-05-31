@@ -39,6 +39,13 @@
     <init>(...);
     <fields>;
 }
+# models.* are also Jackson data classes (User, DownloadItem, DownloadItemPart)
+# deserialized by reflection — keep their fields/ctors or downloads + login break.
+-keep class com.audiobookshelf.app.models.** { *; }
+-keepclassmembers class com.audiobookshelf.app.models.** {
+    <init>(...);
+    <fields>;
+}
 -keep class com.fasterxml.jackson.** { *; }
 -keepclassmembers class * {
     @com.fasterxml.jackson.annotation.* <fields>;
