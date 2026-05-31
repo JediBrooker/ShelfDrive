@@ -95,5 +95,8 @@ See `PRIVACY_POLICY.md` in this repo — host on GitHub Pages, e.g.
 > • MediaBrowserService + MediaSession drives all in-car browse and playback through the OEM Car Media template.
 > • The only Activity exposed to the launcher is the SettingsActivity (ACTION_APPLICATION_PREFERENCES), which is marked `distractionOptimized="false"` so AAOS auto-hides it while the vehicle is in motion. Free-text inputs (server URL, username, password) are only reachable while parked.
 > • The legacy Vue WebView Activity does not have `category.CAR_LAUNCHER` and is not exposed as a car launcher entry point.
+> • Not-signed-in handling: when no server is configured, the MediaBrowserService surfaces an actionable "Sign in" prompt through the Car Media template (PlaybackStateCompat error + ERROR_RESOLUTION_ACTION_INTENT) that launches the parked-only sign-in screen — the app never shows empty tabs with no guidance.
+>
+> ShelfDrive requires a user-provided Audiobookshelf server. A demo server and reviewer credentials are supplied in Play Console → App access so the reviewer can sign in and exercise browse + playback.
 >
 > Source: https://github.com/JediBrooker/ShelfDrive

@@ -11,4 +11,7 @@
     <string name="action_skip_forward">Skip Forward</string>
     <string name="action_skip_backward">Skip Backward</string>
     <string name="action_change_speed">Change Playback Speed</string>
+    <!-- Car Media "not signed in" prompt (Cars App Quality requirement) -->
+    <string name="car_sign_in_required">Sign in to your Audiobookshelf server</string>
+    <string name="car_sign_in_action">Sign in</string>
 </resources>

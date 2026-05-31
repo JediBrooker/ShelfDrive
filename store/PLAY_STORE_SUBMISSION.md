@@ -68,12 +68,41 @@ Everything left for the human to do is marked ☐.
 - ☐ App content questionnaire
   - Privacy policy URL: the GitHub Pages link from step 4
   - Ads: **No**
-  - App access: **All functionality is available without restrictions**
+  - App access: **All or some functionality is restricted** → add an instruction
+    set (see **§5a Reviewer access** below). ShelfDrive is useless without an
+    Audiobookshelf server + credentials, so the reviewer **must** be given a
+    working demo server and login or the AAOS review will bounce ("app shows no
+    content"). Do **not** answer "available without restrictions" — that's
+    inaccurate for a server-dependent app and sets the reviewer up to fail.
   - Content rating: complete the IARC questionnaire — Everyone is expected
   - Target audience: 18+ (audiobook content is user-supplied)
   - News app: **No**
   - COVID-19 contact tracing: **No**
   - Data safety: **No data collected** (the app sends data only to the user-controlled Audiobookshelf server)
+
+### 5a. Reviewer access (REQUIRED — server-dependent app)
+
+The Google reviewer has no Audiobookshelf server. Without one they see the
+in-car "Sign in" prompt and cannot proceed, which reads as a broken/empty app.
+Provide both of the following:
+
+- ☐ **Stand up a demo Audiobookshelf server** reachable from the public internet
+  (a small VPS or a tunnel to a home instance). Seed it with a few
+  public-domain / royalty-free audiobooks (e.g. LibriVox) and at least one
+  podcast so browse + playback can be exercised. Keep it online through the
+  review window.
+- ☐ **Create a read-only reviewer account** on that server (e.g.
+  `reviewer` / strong password).
+- ☐ In Play Console → **App access** → add an instruction set:
+  > 1. Launch ShelfDrive. The Car Media tile shows a "Sign in" button.
+  > 2. Open the settings cog (or tap "Sign in") to reach the parked-only
+  >    Settings screen.
+  > 3. Server URL: `https://demo.example.com` · Username: `reviewer` ·
+  >    Password: `<password>`
+  > 4. Tap **Sign In**. Return to the media tile — Continue, Recent,
+  >    Libraries, and Downloads now populate.
+- ☐ Note the demo server URL + credentials here once created so future
+  submissions reuse them.
 
 - ☐ Store listing
   - Paste the short and full descriptions from `STORE_LISTING_DRAFT.md`
@@ -102,6 +131,7 @@ Everything left for the human to do is marked ☐.
 - ☐ Promote internal → closed beta (a handful of testers) → open beta (public opt-in) → production
 - ☐ First-time AAOS submissions typically take **3–7 business days** to review. Updates are faster.
 - ☐ Address any policy-team feedback. Common AAOS-review pushback:
+  - "App shows no content / empty browse" → almost always means the reviewer didn't sign in. Confirm the demo server from §5a is up and the credentials are in App access. The media tile surfaces a "Sign in" prompt via `PlaybackStateCompat` error + resolution intent (handled in `PlayerNotificationService.setSignInRequiredPlaybackState()`), so there's an in-template path, not just the cog.
   - "Activity isn't distraction-optimized" → SettingsActivity already declares `distractionOptimized="false"` so AAOS hides it while driving; cite that in the review reply
   - "WebView entry point" → MainActivity no longer has `category.CAR_LAUNCHER` so it isn't an AAOS launcher entry; cite that
   - "Uses GMS Cast on non-GMS device" → Cast subsystem entirely removed; cite the commit
