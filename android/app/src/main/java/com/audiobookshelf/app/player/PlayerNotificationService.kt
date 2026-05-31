@@ -28,6 +28,7 @@ import androidx.media.utils.MediaConstants
 import com.audiobookshelf.app.BuildConfig
 import com.audiobookshelf.app.MainActivity
 import com.audiobookshelf.app.R
+import com.audiobookshelf.app.SettingsActivity
 import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.data.DeviceInfo
 import com.audiobookshelf.app.device.DeviceManager
@@ -58,12 +59,11 @@ import kotlinx.coroutines.runBlocking
 const val SLEEP_TIMER_WAKE_UP_EXPIRATION = 120000L // 2m
 const val PLAYER_EXO = "exo-player"
 
-// Extends MediaBrowserServiceCompat for upstream Android Auto compatibility on
-// phones. The ShelfDrive fork's manifest does NOT register the
-// android.media.browse.MediaBrowserService intent-filter, so on AAOS the OEM
-// host can't bind here — the browseTree / onGetRoot / onLoadChildren
-// machinery below is unreachable in this build. Preserved so re-enabling
-// phone Android Auto only takes a manifest change.
+// Extends MediaBrowserServiceCompat to act as the Car Media browse provider.
+// The manifest registers the android.media.browse.MediaBrowserService
+// intent-filter, so AAOS / Android Auto hosts bind here and drive the in-car
+// UI through onGetRoot / onLoadChildren and the browseTree below. Caller
+// packages are gated in isValid() / VALID_MEDIA_BROWSERS.
 class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   companion object {
@@ -129,6 +129,10 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   // These are used to trigger reloading if
   private var forceReloadingAndroidAuto: Boolean = false
   private var firstLoadDone: Boolean = false
+
+  // True while the Car Media "sign in" error state is being surfaced because no
+  // server connection is configured. Used to throttle redundant state sets/logs.
+  private var signInPromptActive: Boolean = false
 
   fun isBrowseTreeInitialized(): Boolean {
     return this::browseTree.isInitialized
@@ -1199,6 +1203,70 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     return true
   }
 
+  /**
+   * Cars App Quality requires the MediaBrowserService to handle the
+   * "user not signed in" startup scenario. When no Audiobookshelf server has
+   * been configured, surface an actionable error so the OEM Car Media template
+   * shows a "Sign in" button instead of empty tabs. Selecting it (only possible
+   * while parked) runs the resolution PendingIntent, which opens the native
+   * SettingsActivity sign-in screen.
+   *
+   * Routed through MediaSessionConnector.setCustomErrorMessage rather than
+   * mediaSession.setPlaybackState: the connector owns the session's playback
+   * state while a player is attached (since onCreate), so a raw setPlaybackState
+   * would be overwritten on the connector's next publish. The custom error is
+   * merged into every state the connector emits and persists until cleared.
+   */
+  private fun setSignInRequiredPlaybackState() {
+    if (!this::mediaSessionConnector.isInitialized) return
+
+    val settingsIntent =
+            Intent(this, SettingsActivity::class.java).apply {
+              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+    val resolutionIntent =
+            PendingIntent.getActivity(
+                    this,
+                    0,
+                    settingsIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+    val errorExtras =
+            Bundle().apply {
+              putString(
+                      MediaConstants.PLAYBACK_STATE_EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL,
+                      getString(R.string.car_sign_in_action)
+              )
+              putParcelable(
+                      MediaConstants.PLAYBACK_STATE_EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT,
+                      resolutionIntent
+              )
+            }
+
+    mediaSessionConnector.setCustomErrorMessage(
+            getString(R.string.car_sign_in_required),
+            PlaybackStateCompat.ERROR_CODE_AUTHENTICATION_EXPIRED,
+            errorExtras
+    )
+    if (!signInPromptActive) {
+      AbsLogger.info(tag, "onLoadChildren: No server configured — surfaced sign-in prompt to Car Media host")
+      signInPromptActive = true
+    }
+  }
+
+  /**
+   * Clears a previously-surfaced sign-in error once a server connection exists.
+   * No-op if the prompt was never shown, so it can be called on every root load.
+   */
+  private fun clearSignInRequiredPlaybackState() {
+    if (!signInPromptActive) return
+    if (this::mediaSessionConnector.isInitialized) {
+      mediaSessionConnector.setCustomErrorMessage(null)
+    }
+    signInPromptActive = false
+  }
+
   override fun onGetRoot(
           clientPackageName: String,
           clientUid: Int,
@@ -1242,6 +1310,18 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     AbsLogger.info(tag, "onLoadChildren: parentMediaId: $parentMediaId (${DeviceManager.serverConnectionConfigString})")
 
     result.detach()
+
+    // Cars App Quality: handle the "not signed in" MediaBrowserService scenario.
+    // At the browse root, show an actionable "Sign in" prompt when no server is
+    // configured; clear it once a connection exists. Evaluated only at the root
+    // so it doesn't run on every sub-tree load.
+    if (parentMediaId == AUTO_MEDIA_ROOT) {
+      if (DeviceManager.deviceData.serverConnectionConfigs.isEmpty()) {
+        setSignInRequiredPlaybackState()
+      } else {
+        clearSignInRequiredPlaybackState()
+      }
+    }
 
     // Prevent crashing if app is restarted while browsing
     if ((parentMediaId != DOWNLOADS_ROOT && parentMediaId != AUTO_MEDIA_ROOT) && !firstLoadDone) {
