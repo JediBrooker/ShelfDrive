@@ -54,8 +54,8 @@ Everything left for the human to do is marked ☐.
 - ✓ Screenshots (1152×1536 native, 4 captures): `store/screenshots-aaos/`
 - ☐ Feature graphic (1024×500). Not done — create one in Canva / Figma. Suggested: orange Polestar gradient, ShelfDrive icon left, white text "ShelfDrive — your audiobooks in the car" right.
 - ✓ Short description, full description, release notes: `STORE_LISTING_DRAFT.md`
-- ✓ Privacy policy markdown: `PRIVACY_POLICY.md`
-- ☐ Host the privacy policy publicly. Easiest path: enable GitHub Pages on the `JediBrooker/ShelfDrive` repo (Settings → Pages → Source: main → /(root)), then the URL is `https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY` (markdown auto-renders).
+- ✓ Privacy policy markdown: `docs/PRIVACY_POLICY.md`
+- ✓ Privacy policy hosted publicly via GitHub Pages (Source: main → /docs): `https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY` (markdown auto-renders).
 
 ## 5. Play Console setup
 

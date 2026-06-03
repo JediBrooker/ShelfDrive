@@ -84,8 +84,8 @@ Self-rate via Google's IARC questionnaire:
 
 ## Privacy policy URL
 
-See `PRIVACY_POLICY.md` in this repo — host on GitHub Pages, e.g.
-`https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY.html`
+See `docs/PRIVACY_POLICY.md` in this repo — hosted on GitHub Pages at
+`https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY`
 
 ## Review notes (for the Google reviewer)
 
