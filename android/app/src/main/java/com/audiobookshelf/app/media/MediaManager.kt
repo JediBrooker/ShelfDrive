@@ -30,6 +30,7 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
   private var cachedLibraryCollections : MutableMap<String, MutableMap<String, LibraryCollection>> = hashMapOf()
   private var cachedLibraryRecentShelves : MutableMap<String, MutableList<LibraryShelfType>> = hashMapOf()
   private var cachedLibraryDiscovery : MutableMap<String, MutableList<LibraryItem>> = hashMapOf()
+  private var cachedLibraryBooks : MutableMap<String, List<LibraryItem>> = hashMapOf()
   private var cachedLibraryPodcasts : MutableMap<String, MutableMap<String, LibraryItem>> = hashMapOf()
   private var isLibraryPodcastsCached : MutableMap<String, Boolean> = hashMapOf()
   var allLibraryPersonalizationsDone : Boolean = false
@@ -285,6 +286,24 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * Returns podcasts for selected library.
    * If data is not found from local cache it is loaded from server
    */
+  fun loadLibraryBooksWithAudio(libraryId: String, cb: (List<LibraryItem>) -> Unit) {
+    if (cachedLibraryBooks.containsKey(libraryId)) {
+      cb(cachedLibraryBooks[libraryId]!!)
+    } else {
+      apiHandler.getLibraryItems(libraryId) { libraryItems ->
+        val items = libraryItems.filter { it.checkHasTracks() }
+            .sortedBy { it.title?.lowercase() }
+        cachedLibraryBooks[libraryId] = items
+        items.forEach { libraryItem ->
+          if (serverLibraryItems.find { it.id == libraryItem.id } == null) {
+            serverLibraryItems.add(libraryItem)
+          }
+        }
+        cb(items)
+      }
+    }
+  }
+
   fun loadLibraryPodcasts(libraryId:String, cb: (List<LibraryItem>?) -> Unit) {
     // Without this there is possibility that only recent podcasts get loaded
     // Loading recent podcasts will also create cachedLibraryPodcasts entry for library

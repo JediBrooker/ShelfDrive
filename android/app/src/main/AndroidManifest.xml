@@ -64,14 +64,12 @@
             android:label="@string/title_activity_main"
             android:launchMode="singleTask"
             android:theme="@style/AppTheme.NoActionBarLaunch" >
+            <!-- No LAUNCHER category: on AAOS the user reaches the app
+                 through the system media template (MediaBrowserService) or the
+                 settings cog (SettingsActivity). The WebView is not
+                 distraction-optimized and must not appear in the car launcher. -->
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
-                <category android:name="android.intent.category.LAUNCHER" />
-                <!-- CAR_LAUNCHER intentionally omitted: the Vue WebView is not
-                     distraction-optimized so it can't be a car launcher entry.
-                     On AAOS the entry points are the media tile (browse via
-                     MediaBrowserService) and the settings cog. -->
             </intent-filter>
             <intent-filter>
                 <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
@@ -125,6 +123,9 @@
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
+            <meta-data
+                android:name="androidx.car.app.launchable"
+                android:value="true" />
         </service>
 
         <provider

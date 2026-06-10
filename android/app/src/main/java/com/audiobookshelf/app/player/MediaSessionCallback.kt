@@ -81,7 +81,7 @@ class MediaSessionCallback(var playerNotificationService:PlayerNotificationServi
   }
 
   override fun onRewind() {
-    playerNotificationService.jumpBackward()
+    playerNotificationService.seekPlayer(playerNotificationService.getCurrentTrackStartOffsetMs())
   }
 
   override fun onSeekTo(pos: Long) {
