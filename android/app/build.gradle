@@ -29,6 +29,10 @@ def keystoreProperties = new Properties()
 if (keystorePropertiesFile.exists()) {
   keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
+// Passwords are read from the environment (not keystore.properties) so they
+// never need to be written to a file. Set KEYSTORE_STORE_PASSWORD /
+// KEYSTORE_KEY_PASSWORD before running gradlew.
+def signingSecret = { propKey, envKey -> System.getenv(envKey) ?: keystoreProperties[propKey] }
 
 android {
   namespace 'com.audiobookshelf.app'
@@ -61,9 +65,9 @@ android {
       // No-ops if keystore.properties is absent (CI / debug-only builds).
       if (keystorePropertiesFile.exists()) {
         storeFile rootProject.file(keystoreProperties['storeFile'])
-        storePassword keystoreProperties['storePassword']
+        storePassword signingSecret('storePassword', 'KEYSTORE_STORE_PASSWORD')
         keyAlias keystoreProperties['keyAlias']
-        keyPassword keystoreProperties['keyPassword']
+        keyPassword signingSecret('keyPassword', 'KEYSTORE_KEY_PASSWORD')
       }
     }
   }
