@@ -6,7 +6,7 @@ export default {
   telemetry: false,
   env: {
     PROD: '1',
-    ANDROID_APP_URL: 'https://play.google.com/store/apps/details?id=com.jedibrooker.shelfdrive',
+    ANDROID_APP_URL: 'https://play.google.com/store/apps/details?id=com.jedibk.shelfdrive',
     IOS_APP_URL: ''
   },
 

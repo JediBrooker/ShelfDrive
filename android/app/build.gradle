@@ -45,14 +45,14 @@ android {
   }
   compileSdk rootProject.ext.compileSdkVersion
   defaultConfig {
-    applicationId "com.jedibrooker.shelfdrive"
+    applicationId "com.jedibk.shelfdrive"
     minSdkVersion rootProject.ext.minSdkVersion
     targetSdkVersion rootProject.ext.targetSdkVersion
     versionCode 122
     versionName "0.1"
     testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     manifestPlaceholders = [
-      "appAuthRedirectScheme": "com.jedibrooker.shelfdrive"
+      "appAuthRedirectScheme": "com.jedibk.shelfdrive"
     ]
     aaptOptions {
       // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

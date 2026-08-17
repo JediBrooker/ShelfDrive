@@ -8,7 +8,7 @@ When asked to create/cut a new release build, follow this procedure exactly. Don
 
 Steps:
 
-1. Inspect `android/app/build.gradle` and confirm the current `applicationId` and `versionCode`. Use these live values, not remembered/assumed ones — the package name has been wrong in at least one prior instruction draft (`com.jedibk.shelfdrive` was wrong; the real value was `com.jedibrooker.shelfdrive` as of versionCode 122 — but re-check, don't trust either of those blindly).
+1. Inspect `android/app/build.gradle` and confirm the current `applicationId` and `versionCode`. Use these live values, not remembered ones — the applicationId is `com.jedibk.shelfdrive` (confirmed against the live Play Console listing on 2026-08-17; an earlier repo commit had it wrong as `com.jedibrooker.shelfdrive` across build.gradle, both capacitor.config.json files, strings.xml, PlayerNotificationService.kt's VALID_MEDIA_BROWSERS list, and nuxt.config.js's ANDROID_APP_URL — all since fixed). Re-verify against build.gradle regardless; don't trust this note if it ever looks stale.
 2. Change only `defaultConfig.versionCode` to the next value (the next unused build number — ask if it's not obvious what that is, e.g. if the Play Store might be ahead of what's committed here). Leave `versionName` unchanged unless explicitly asked to bump it.
 3. Do not generate a new keystore.
 4. Do not modify the signing configuration.
