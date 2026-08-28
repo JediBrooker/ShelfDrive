@@ -1,18 +1,16 @@
 package com.audiobookshelf.app.device
 
-import android.appwidget.AppWidgetManager
-import android.content.ComponentName
 import android.content.Context
-import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
-import com.audiobookshelf.app.MediaPlayerWidget
+import com.audiobookshelf.app.BuildConfig
 import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.managers.DbManager
 import com.audiobookshelf.app.media.CoverCache
 import com.audiobookshelf.app.player.PlayerNotificationService
-import com.audiobookshelf.app.updateAppWidget
+import java.util.concurrent.atomic.AtomicLong
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 
 /** Interface for widget event handling. */
 interface WidgetEventEmitter {
@@ -26,13 +24,171 @@ interface WidgetEventEmitter {
   fun onPlayerClosed()
 }
 
+/**
+ * Identifies one in-process lifetime of a saved server profile. Connection IDs
+ * are deterministic, so the epoch is required to distinguish remove/re-add of
+ * the same address and username from the profile that an old callback used.
+ */
+data class ConnectionLease(
+  val connectionId: String,
+  /** Monotonic lifetime token for this exact saved config instance. */
+  val epoch: Long
+)
+
 /** Singleton object for managing device-related operations. */
 object DeviceManager {
   const val tag = "DeviceManager"
 
   val dbManager: DbManager = DbManager()
   var deviceData: DeviceData = dbManager.getDeviceData()
-  var serverConnectionConfig: ServerConnectionConfig? = null
+  /**
+   * Serializes selection, credential rotation, and account removal. Network
+   * callbacks can retain a ServerConnectionConfig reference after Android's
+   * AccountManager removes that profile, so accepting arbitrary late writes
+   * here would resurrect a disconnected account.
+   */
+  internal val connectionStateMonitor = Any()
+  /**
+   * Serializes durable account/profile writes without holding
+   * [connectionStateMonitor] across Paper, Keystore, or SharedPreferences I/O.
+   * Writers acquire this monitor first and only briefly enter the state monitor
+   * to validate or commit memory state.
+   */
+  internal val connectionPersistenceMonitor = Any()
+  /** Global structural generation used to invalidate browse/search results. */
+  private val connectionStateEpoch = AtomicLong(0L)
+  private val nextConnectionLifetime = AtomicLong(0L)
+  private val nextPlaybackCheckpointRevision = AtomicLong(0L)
+  private var committedPlaybackCheckpointRevision = 0L
+  private data class SavedConnectionLifetime(
+    val config: ServerConnectionConfig,
+    val generation: Long
+  )
+  private val savedConnectionLifetimes = mutableMapOf<String, SavedConnectionLifetime>()
+  @Volatile private var activeServerConnectionConfig: ServerConnectionConfig? = null
+
+  /** Must be called while [connectionStateMonitor] is held. */
+  private fun lifetimeForLocked(config: ServerConnectionConfig): Long {
+    val existing = savedConnectionLifetimes[config.id]
+    if (existing?.config === config) return existing.generation
+    return nextConnectionLifetime.incrementAndGet().also { generation ->
+      savedConnectionLifetimes[config.id] = SavedConnectionLifetime(config, generation)
+    }
+  }
+
+  /** Must be called while [connectionStateMonitor] is held. */
+  private fun isLeaseCurrentLocked(
+    lease: ConnectionLease,
+    expectedConfig: ServerConnectionConfig? = null
+  ): Boolean {
+    val savedConfig = deviceData.serverConnectionConfigs.find {
+      it.id == lease.connectionId && it.token.isNotBlank()
+    } ?: return false
+    if (expectedConfig != null && savedConfig !== expectedConfig) return false
+    val lifetime = savedConnectionLifetimes[lease.connectionId] ?: return false
+    return lifetime.config === savedConfig && lifetime.generation == lease.epoch
+  }
+
+  var serverConnectionConfig: ServerConnectionConfig?
+    get() = activeServerConnectionConfig
+    set(value) {
+      trySelectServerConnectionConfig(value)
+    }
+
+  /**
+   * Select only the current saved instance. Returns false when a callback is
+   * holding a removed or permanently unauthenticated profile.
+   */
+  fun trySelectServerConnectionConfig(
+    config: ServerConnectionConfig?,
+    lease: ConnectionLease? = null
+  ): Boolean =
+    synchronized(connectionStateMonitor) {
+      if (config == null) {
+        activeServerConnectionConfig = null
+        return@synchronized true
+      }
+
+      val savedConfig = deviceData.serverConnectionConfigs.find {
+        it === config && it.token.isNotBlank()
+      }
+      if (lease != null && (
+          lease.connectionId != config.id ||
+            !isLeaseCurrentLocked(lease, config)
+        )) {
+        return@synchronized false
+      }
+      if (savedConfig == null) {
+        if (activeServerConnectionConfig?.id == config.id) {
+          activeServerConnectionConfig = null
+        }
+        false
+      } else {
+        activeServerConnectionConfig = savedConfig
+        true
+      }
+    }
+
+  fun isServerConnectionConfigSaved(connectionId: String): Boolean =
+    synchronized(connectionStateMonitor) {
+      connectionId.isNotBlank() && deviceData.serverConnectionConfigs.any {
+        it.id == connectionId && it.token.isNotBlank()
+      }
+    }
+
+  /** Captures a lease only for the exact currently saved config instance. */
+  fun captureConnectionLease(config: ServerConnectionConfig?): ConnectionLease? =
+    synchronized(connectionStateMonitor) {
+      val candidate = config ?: activeServerConnectionConfig ?: return@synchronized null
+      val savedConfig = deviceData.serverConnectionConfigs.find {
+        it === candidate && it.token.isNotBlank()
+      } ?: return@synchronized null
+      ConnectionLease(savedConfig.id, lifetimeForLocked(savedConfig))
+    }
+
+  fun isConnectionLeaseCurrent(lease: ConnectionLease): Boolean =
+    synchronized(connectionStateMonitor) {
+      isLeaseCurrentLocked(lease)
+    }
+
+  fun getServerConnectionConfig(lease: ConnectionLease): ServerConnectionConfig? =
+    synchronized(connectionStateMonitor) {
+      if (!isLeaseCurrentLocked(lease)) return@synchronized null
+      savedConnectionLifetimes[lease.connectionId]?.config
+    }
+
+  /**
+   * Returns a stable structural snapshot for callers that need to enumerate
+   * saved profiles outside the connection-state critical section. The config
+   * objects remain the canonical saved instances so identity-based leases keep
+   * working; callers must not mutate them.
+   */
+  fun snapshotServerConnectionConfigs(): List<ServerConnectionConfig> =
+    synchronized(connectionStateMonitor) {
+      deviceData.serverConnectionConfigs.toList()
+    }
+
+  /** Resolves the last selected profile without exposing the mutable backing list. */
+  fun getLastServerConnectionConfig(): ServerConnectionConfig? =
+    synchronized(connectionStateMonitor) {
+      val lastId = deviceData.lastServerConnectionConfigId ?: return@synchronized null
+      deviceData.serverConnectionConfigs.find {
+        it.id == lastId && isServerAddressAllowed(it.address)
+      }
+    }
+
+  fun currentConnectionStateEpoch(): Long = connectionStateEpoch.get()
+
+  internal fun advanceConnectionStateEpoch(): Long = connectionStateEpoch.incrementAndGet()
+
+  fun isConnectionStateCurrent(expectedEpoch: Long, connectionId: String?): Boolean =
+    synchronized(connectionStateMonitor) {
+      if (expectedEpoch != connectionStateEpoch.get()) return@synchronized false
+      if (connectionId == null) return@synchronized true
+      deviceData.serverConnectionConfigs.any {
+        it.id == connectionId && it.token.isNotBlank()
+      }
+    }
 
   val serverConnectionConfigId get() = serverConnectionConfig?.id ?: ""
   val serverConnectionConfigName get() = serverConnectionConfig?.name ?: ""
@@ -56,6 +212,10 @@ object DeviceManager {
 
   init {
     Log.d(tag, "Device Manager Singleton invoked")
+
+    // Older persisted records may predate DeviceSettings. Normalize the
+    // model once so browse paths never force-unwrap a nullable value.
+    deviceData.deviceSettings = deviceData.deviceSettings ?: DeviceSettings.default()
 
     // Initialize new sleep timer settings and shake sensitivity added in v0.9.61
     if (deviceData.deviceSettings?.autoSleepTimerStartTime == null ||
@@ -96,6 +256,16 @@ object DeviceManager {
       deviceData.deviceSettings?.androidAutoBrowseSeriesSequenceOrder =
               AndroidAutoBrowseSeriesSequenceOrderSetting.ASC
     }
+    deviceData.deviceSettings?.let { settings ->
+      if (settings.jumpBackwardsTime !in 1..3_600) settings.jumpBackwardsTime = 10
+      if (settings.jumpForwardTime !in 1..3_600) settings.jumpForwardTime = 10
+      settings.androidAutoBrowseLimitForGrouping =
+        settings.androidAutoBrowseLimitForGrouping.coerceIn(20, 1_000)
+      if (settings.sleepTimerLength <= 0L) settings.sleepTimerLength = 900_000L
+      if (settings.autoSleepTimerAutoRewindTime < 0L) {
+        settings.autoSleepTimerAutoRewindTime = 300_000L
+      }
+    }
   }
 
   /**
@@ -116,8 +286,97 @@ object DeviceManager {
    * @return The ServerConnectionConfig instance or null if not found.
    */
   fun getServerConnectionConfig(id: String?): ServerConnectionConfig? {
-    return id?.let { deviceData.serverConnectionConfigs.find { it.id == id } }
+    return synchronized(connectionStateMonitor) {
+      id ?: return@synchronized null
+      deviceData.serverConnectionConfigs.find { config ->
+        config.id == id && isServerAddressAllowed(config.address)
+      }
+    }
   }
+
+  /** Release builds only permit authenticated server traffic over HTTPS. */
+  fun isServerAddressAllowed(address: String): Boolean {
+    val url = try {
+      address.trim().toHttpUrlOrNull()
+    } catch (_: RuntimeException) {
+      null
+    } ?: return false
+    val schemeAllowed = url.scheme == "https" || (BuildConfig.DEBUG && url.scheme == "http")
+    return schemeAllowed &&
+      url.host.isNotBlank() &&
+      url.username.isBlank() &&
+      url.password.isBlank() &&
+      url.query == null &&
+      url.fragment == null
+  }
+
+  /**
+   * Removes legacy cleartext profiles before any background browse request can
+   * reuse their access token. Returns IDs so callers can also erase associated
+   * encrypted refresh tokens.
+   */
+  fun removeInsecureServerConnections(
+    persistDeviceData: (DeviceData) -> Unit = dbManager::saveDeviceData
+  ): List<String> = synchronized(connectionPersistenceMonitor) persistence@{
+    val candidate = synchronized(connectionStateMonitor) state@{
+      val ids = deviceData.serverConnectionConfigs
+        .filterNot { isServerAddressAllowed(it.address) }
+        .map { it.id }
+      if (ids.isEmpty()) return@state null
+      val retained = deviceData.serverConnectionConfigs
+        .filterNot { it.id in ids }
+        .toMutableList()
+      val fallback = retained.firstOrNull {
+        it.token.isNotBlank() && isServerAddressAllowed(it.address)
+      }
+      val nextLastId = deviceData.lastServerConnectionConfigId
+        .takeUnless { it in ids }
+        ?: fallback?.id
+      val nextPlayback = deviceData.lastPlaybackSession
+        ?.takeUnless { it.serverConnectionConfigId in ids }
+      InsecureConnectionCleanupCandidate(
+        ids,
+        DeviceData(retained, nextLastId, deviceData.deviceSettings, nextPlayback),
+        fallback
+      )
+    } ?: return@persistence emptyList()
+
+    try {
+      persistDeviceData(candidate.deviceData)
+    } catch (error: RuntimeException) {
+      Log.e(tag, "Unable to commit insecure profile removal (${error.javaClass.simpleName})")
+      return@persistence emptyList()
+    }
+
+    synchronized(connectionStateMonitor) {
+      advanceConnectionStateEpoch()
+      deviceData = candidate.deviceData
+      val activeNow = activeServerConnectionConfig
+      activeServerConnectionConfig = when {
+        activeNow?.id in candidate.removedIds -> candidate.fallbackActive
+        candidate.deviceData.serverConnectionConfigs.any { it === activeNow } -> activeNow
+        else -> candidate.fallbackActive
+      }
+    }
+
+    // Failed progress syncs are queued separately from DeviceData. Purge
+    // sessions tied to rejected profiles so an old cleartext endpoint cannot
+    // be retried after its credentials/config have been removed.
+    try {
+      dbManager.getPlaybackSessions()
+        .filter { it.serverConnectionConfigId in candidate.removedIds }
+        .forEach(dbManager::removePlaybackSession)
+    } catch (error: RuntimeException) {
+      Log.e(tag, "Unable to remove queued sessions for rejected server profiles (${error.javaClass.simpleName})")
+    }
+    candidate.removedIds
+  }
+
+  private data class InsecureConnectionCleanupCandidate(
+    val removedIds: List<String>,
+    val deviceData: DeviceData,
+    val fallbackActive: ServerConnectionConfig?
+  )
 
   /**
    * Check if the currently connected server version is >= compareVersion
@@ -161,90 +420,61 @@ object DeviceManager {
    */
   fun checkConnectivity(ctx: Context): Boolean {
     val connectivityManager =
-            ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+              ?: return false
     val capabilities = connectivityManager.getNetworkCapabilities(connectivityManager.activeNetwork)
-    if (capabilities != null) {
-      if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-        Log.i("Internet", "NetworkCapabilities.TRANSPORT_CELLULAR")
-        return true
-      } else if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-        Log.i("Internet", "NetworkCapabilities.TRANSPORT_WIFI")
-        return true
-      } else if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) {
-        Log.i("Internet", "NetworkCapabilities.TRANSPORT_ETHERNET")
-        return true
-      }
-    }
-    return false
+    // AAOS connectivity can be supplied by transports other than Wi-Fi,
+    // cellular, or Ethernet (for example an OEM-managed VPN). Capabilities are
+    // the transport-agnostic signal that a route is usable for server calls.
+    return capabilities?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true &&
+      capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
   }
 
   /**
    * Sets the last playback session.
    * @param playbackSession The playback session to set.
    */
-  fun setLastPlaybackSession(playbackSession: PlaybackSession) {
-    deviceData.lastPlaybackSession = playbackSession
-    dbManager.saveDeviceData(deviceData)
-  }
+  internal fun reservePlaybackCheckpointRevision(): Long =
+    nextPlaybackCheckpointRevision.incrementAndGet()
 
-  /**
-   * Initializes the widget updater.
-   * @param context The context to use for initializing the widget updater.
-   */
-  fun initializeWidgetUpdater(context: Context) {
-    Log.d(tag, "Initializing widget updater")
-    if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_APP_WIDGETS)) {
-      Log.i(tag, "App widgets are not available on this device; widget updates disabled")
-      widgetUpdater = null
-      return
+  fun setLastPlaybackSession(
+    playbackSession: PlaybackSession,
+    connectionLease: ConnectionLease? = null,
+    checkpointRevision: Long = reservePlaybackCheckpointRevision()
+  ): Boolean = synchronized(connectionPersistenceMonitor) {
+    if (checkpointRevision <= committedPlaybackCheckpointRevision) {
+      return@synchronized false
     }
-    widgetUpdater =
-            (object : WidgetEventEmitter {
-              override fun onPlayerChanged(pns: PlayerNotificationService) {
-                val isPlaying = pns.currentPlayer.isPlaying
-
-                val appWidgetManager =
-                        context.getSystemService(Context.APPWIDGET_SERVICE) as? AppWidgetManager
-                if (appWidgetManager == null) {
-                  Log.i(tag, "AppWidgetManager unavailable; skipping widget update")
-                  return
-                }
-                val componentName = ComponentName(context, MediaPlayerWidget::class.java)
-                val ids = appWidgetManager.getAppWidgetIds(componentName)
-                val playbackSession = pns.getCurrentPlaybackSessionCopy()
-
-                for (widgetId in ids) {
-                  updateAppWidget(
-                          context,
-                          appWidgetManager,
-                          widgetId,
-                          playbackSession,
-                          isPlaying,
-                          PlayerNotificationService.isClosed
-                  )
-                }
-              }
-
-              override fun onPlayerClosed() {
-                val appWidgetManager =
-                        context.getSystemService(Context.APPWIDGET_SERVICE) as? AppWidgetManager
-                if (appWidgetManager == null) {
-                  Log.i(tag, "AppWidgetManager unavailable; skipping widget close update")
-                  return
-                }
-                val componentName = ComponentName(context, MediaPlayerWidget::class.java)
-                val ids = appWidgetManager.getAppWidgetIds(componentName)
-                for (widgetId in ids) {
-                  updateAppWidget(
-                          context,
-                          appWidgetManager,
-                          widgetId,
-                          deviceData.lastPlaybackSession,
-                          false,
-                          PlayerNotificationService.isClosed
-                  )
-                }
-              }
-            })
+    val durableSession = playbackSession.copySanitizedForPersistence()
+    var priorSession: PlaybackSession? = null
+    val committed = synchronized(connectionStateMonitor) {
+      val ownerId = durableSession.serverConnectionConfigId
+      if (!durableSession.isLocal || !ownerId.isNullOrBlank()) {
+        val lease = connectionLease ?: return@synchronized false
+        if (ownerId != lease.connectionId ||
+          !isConnectionLeaseCurrent(lease)
+        ) {
+          return@synchronized false
+        }
+      }
+      priorSession = deviceData.lastPlaybackSession
+      deviceData.lastPlaybackSession = durableSession
+      true
+    }
+    if (!committed) return@synchronized false
+    try {
+      dbManager.saveDeviceData(deviceData)
+      committedPlaybackCheckpointRevision = checkpointRevision
+      true
+    } catch (error: RuntimeException) {
+      Log.e(tag, "Unable to save playback checkpoint (${error.javaClass.simpleName})")
+      synchronized(connectionStateMonitor) {
+        if (deviceData.lastPlaybackSession === durableSession) {
+          deviceData.lastPlaybackSession = priorSession
+        }
+      }
+      false
+    }
   }
+
 }

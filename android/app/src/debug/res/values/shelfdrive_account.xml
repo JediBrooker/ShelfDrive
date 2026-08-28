@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shelfdrive_account_type" translatable="false">com.jedibk.shelfdrive.debug.account</string>
+</resources>

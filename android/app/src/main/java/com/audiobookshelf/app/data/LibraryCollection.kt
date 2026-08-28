@@ -19,10 +19,12 @@ class LibraryCollection(
   val title get() = name
 
   @get:JsonIgnore
-  val bookCount get() = if (books != null) books!!.size else 0
+  val bookCount get() = books?.size ?: 0
 
   @get:JsonIgnore
-  val audiobookCount get() = books?.filter { book -> (book.media as Book).getAudioTracks().isNotEmpty() }?.size ?: 0
+  val audiobookCount get() = books.orEmpty().count { item ->
+    (item.media as? Book)?.getAudioTracks()?.isNotEmpty() == true
+  }
 
   @JsonIgnore
   override fun getMediaDescription(progress:MediaProgressWrapper?, ctx: Context): MediaDescriptionCompat {

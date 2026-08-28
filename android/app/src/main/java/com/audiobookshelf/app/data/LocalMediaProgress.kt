@@ -26,7 +26,7 @@ class LocalMediaProgress(
   var episodeId:String?
 ) : MediaProgressWrapper(isFinished, currentTime, progress) {
   @get:JsonIgnore
-  val progressPercent get() = if (progress.isNaN()) 0 else (progress * 100).roundToInt()
+  val progressPercent get() = (normalizedProgress * 100).roundToInt()
   @get:JsonIgnore
   override val mediaItemId get() = if (libraryItemId != null) {
         if (episodeId.isNullOrEmpty()) libraryItemId ?: "" else "$libraryItemId-$episodeId"
@@ -53,7 +53,7 @@ class LocalMediaProgress(
 
   @JsonIgnore
   fun updateFromPlaybackSession(playbackSession:PlaybackSession) {
-    currentTime = playbackSession.currentTime
+    currentTime = playbackSession.currentTime.takeIf { it.isFinite() }?.coerceAtLeast(0.0) ?: 0.0
     progress = playbackSession.progress
     lastUpdate = playbackSession.updatedAt
     isFinished = playbackSession.progress >= 0.99
@@ -63,18 +63,23 @@ class LocalMediaProgress(
   @JsonIgnore
   fun updateEbookProgress(ebookLocation:String, ebookProgress:Double) {
     lastUpdate = System.currentTimeMillis()
-    this.ebookProgress = ebookProgress
+    this.ebookProgress = ebookProgress.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.0
     this.ebookLocation = ebookLocation
   }
 
   @JsonIgnore
   fun updateFromServerMediaProgress(serverMediaProgress:MediaProgress) {
     isFinished = serverMediaProgress.isFinished
-    progress = serverMediaProgress.progress
+    progress = serverMediaProgress.normalizedProgress
     currentTime = serverMediaProgress.currentTime
+      .takeIf { it.isFinite() }
+      ?.coerceAtLeast(0.0)
+      ?: 0.0
     ebookProgress = serverMediaProgress.ebookProgress
+      ?.takeIf { it.isFinite() }
+      ?.coerceIn(0.0, 1.0)
     ebookLocation = serverMediaProgress.ebookLocation
-    duration = serverMediaProgress.duration
+    duration = serverMediaProgress.duration.takeIf { it.isFinite() && it >= 0.0 } ?: 0.0
     lastUpdate = serverMediaProgress.lastUpdate
     finishedAt = serverMediaProgress.finishedAt
     startedAt = serverMediaProgress.startedAt

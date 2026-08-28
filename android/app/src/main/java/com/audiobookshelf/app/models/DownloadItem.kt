@@ -41,4 +41,9 @@ data class DownloadItem(
 
     return itemParts
   }
+
+  /** Keep server, account, title, and filesystem details out of logs and crash reports. */
+  override fun toString(): String =
+    "DownloadItem(mediaType=$mediaType, isInternalStorage=$isInternalStorage, " +
+      "isDownloadFinished=$isDownloadFinished, identifiersAndPaths=<redacted>)"
 }

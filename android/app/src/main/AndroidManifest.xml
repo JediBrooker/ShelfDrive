@@ -1,33 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:dist="http://schemas.android.com/apk/distribution"
-    xmlns:tools="http://schemas.android.com/tools"
-    android:installLocation="preferExternal" >
+    xmlns:tools="http://schemas.android.com/tools" >
 
     <uses-feature
         android:name="android.hardware.type.automotive"
         android:required="true" />
+    <!-- Prevent transitive dependencies from excluding fixed-orientation,
+         cellular-only, or camera-less vehicles from the AAOS track. -->
+    <uses-feature android:name="android.hardware.screen.landscape" android:required="false" />
+    <uses-feature android:name="android.hardware.screen.portrait" android:required="false" />
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Permissions -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <!-- Normal (non-runtime) permission used only for brief sleep-timer reset
+         feedback on Automotive devices that expose a vibrator. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Phone-only storage libraries contribute these transitively. The AAOS
+         artifact uses app-private files and persisted content URIs instead. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:appCategory="audio"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
         android:theme="@style/AppTheme"
-        android:usesCleartextTraffic="true"
-        android:largeHeap="true" >
+        android:usesCleartextTraffic="false" >
 
         <!-- Declare ShelfDrive as an Android Automotive OS media app so OEM
              launchers (Polestar / Volvo / reference AAOS) render the home
@@ -39,59 +46,14 @@
         <meta-data
             android:name="com.android.automotive"
             android:resource="@xml/automotive_app_desc" />
-
-        <!-- Android app widget -->
-        <receiver
-          android:name="MediaPlayerWidget"
-          android:exported="false">
-          <intent-filter>
-            <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-          </intent-filter>
-
-          <meta-data
-            android:name="android.appwidget.provider"
-            android:resource="@xml/media_player_widget_info" />
-
-          <meta-data
-            android:name="com.samsung.android.appwidget.provider"
-            android:resource="@xml/samsung_cover_widget_info" />
-        </receiver>
-
-        <activity
-            android:name=".MainActivity"
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
-            android:exported="true"
-            android:label="@string/title_activity_main"
-            android:launchMode="singleTask"
-            android:theme="@style/AppTheme.NoActionBarLaunch" >
-            <!-- No LAUNCHER category: on AAOS the user reaches the app
-                 through the system media template (MediaBrowserService) or the
-                 settings cog (SettingsActivity). The WebView is not
-                 distraction-optimized and must not appear in the car launcher. -->
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
-
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-
-            <!-- Register URL scheme -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-
-                <data android:scheme="@string/custom_url_scheme" />
-            </intent-filter>
-        </activity>
+        <meta-data
+            android:name="androidx.car.app.TintableAttributionIcon"
+            android:resource="@drawable/abs_book_1" />
 
         <activity
             android:name=".SettingsActivity"
             android:exported="true"
-            android:label="ShelfDrive Settings"
+            android:label="@string/settings_activity_title"
             android:theme="@style/SettingsTheme" >
             <!-- Not distraction-optimized: this activity has free-text inputs
                  (server URL / username / password) which AAOS Driver Distraction
@@ -115,17 +77,29 @@
         <service
             android:name=".player.PlayerNotificationService"
             android:enabled="true"
-            android:exported="true"
-            android:foregroundServiceType="mediaPlayback" >
+            android:exported="true" >
             <!-- Exposed so OEM Car Media template hosts can bind and call
                  onGetRoot / onLoadChildren. Caller packages are still gated
                  inside PlayerNotificationService.isValid(). -->
             <intent-filter>
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
+        </service>
+
+        <!-- AAOS requires authenticated media apps to integrate with Android's
+             AccountManager. Interactive sign-in remains in parked settings;
+             this service exposes lifecycle management and no auth tokens. -->
+        <service
+            android:name=".accounts.ShelfDriveAuthenticatorService"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCOUNT_AUTHENTICATOR">
+            <intent-filter>
+                <action android:name="android.accounts.AccountAuthenticator" />
+            </intent-filter>
             <meta-data
-                android:name="androidx.car.app.launchable"
-                android:value="true" />
+                android:name="android.accounts.AccountAuthenticator"
+                android:resource="@xml/shelfdrive_account_authenticator" />
         </service>
 
         <provider

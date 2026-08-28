@@ -19,7 +19,8 @@ kotlin {
     "--add-opens=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED"
   ]
 
-  jvmToolchain(17)
+  jvmToolchain(21)
+
 }
 
 // Loads release signing config from keystore.properties (gitignored). See
@@ -29,26 +30,71 @@ def keystoreProperties = new Properties()
 if (keystorePropertiesFile.exists()) {
   keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
+def allowUnsignedReleaseVerification =
+  providers.gradleProperty("allowUnsignedReleaseVerification").orNull == "true"
+
+gradle.taskGraph.whenReady { graph ->
+  def createsReleaseArtifact = graph.allTasks.any { task ->
+    task.project == project && task.name in ["assembleRelease", "bundleRelease", "packageRelease"]
+  }
+  if (createsReleaseArtifact && !keystorePropertiesFile.exists() &&
+      !allowUnsignedReleaseVerification) {
+    throw new GradleException(
+      "Release signing is not configured. Supply android/keystore.properties, " +
+      "or use -PallowUnsignedReleaseVerification=true only for a deliberately unsigned CI check."
+    )
+  }
+}
 
 android {
   namespace 'com.audiobookshelf.app'
+  sourceSets {
+    main {
+      // This dedicated AAOS artifact has no WebView/MainActivity. Do not ship
+      // the dormant Nuxt phone UI (including third-party web dependencies and
+      // legacy branding) when only the native media service/settings surface
+      // is reachable.
+      // An exclude pattern is not honored by AGP's merged-assets pipeline for
+      // a generated Capacitor directory. Remove the app asset source set
+      // entirely; native ShelfDrive code has no AssetManager dependency.
+      assets.srcDirs = []
+    }
+  }
   buildFeatures {
     viewBinding true
     buildConfig true
   }
+  compileOptions {
+    sourceCompatibility JavaVersion.VERSION_21
+    targetCompatibility JavaVersion.VERSION_21
+  }
   kotlinOptions {
     freeCompilerArgs = ['-Xjvm-default=all']
+    jvmTarget = '21'
+  }
+  testOptions {
+    unitTests.includeAndroidResources = true
+    unitTests.all {
+      // Paper's collection serializers use reflection when running on the JVM.
+      jvmArgs '--add-opens=java.base/java.util=ALL-UNNAMED'
+      // The current Capacitor artifacts include Java 21 bytecode; Robolectric
+      // tests that exercise JSObject must therefore run on a Java 21 launcher.
+      javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(21)
+      }
+    }
   }
   compileSdk rootProject.ext.compileSdkVersion
   defaultConfig {
-    applicationId "com.jedibrooker.shelfdrive"
+    applicationId "com.jedibk.shelfdrive"
     minSdkVersion rootProject.ext.minSdkVersion
     targetSdkVersion rootProject.ext.targetSdkVersion
-    versionCode 122
+    // Version 129 was rejected by Play and cannot be uploaded again.
+    versionCode 130
     versionName "0.1"
     testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     manifestPlaceholders = [
-      "appAuthRedirectScheme": "com.jedibrooker.shelfdrive"
+      "appAuthRedirectScheme": "com.jedibk.shelfdrive"
     ]
     aaptOptions {
       // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -58,7 +104,8 @@ android {
   }
   signingConfigs {
     release {
-      // No-ops if keystore.properties is absent (CI / debug-only builds).
+      // CI may deliberately verify an unsigned bundle only through the
+      // explicit property above; local release artifacts are signed by default.
       if (keystorePropertiesFile.exists()) {
         storeFile rootProject.file(keystoreProperties['storeFile'])
         storePassword keystoreProperties['storePassword']
@@ -85,13 +132,6 @@ android {
   }
 }
 
-repositories {
-  flatDir {
-    dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
-  }
-  mavenCentral()
-}
-
 configurations.configureEach {
   resolutionStrategy {
     force("com.google.android.gms:play-services-base:18.0.1")
@@ -107,12 +147,14 @@ dependencies {
   implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
   implementation fileTree(include: ['*.jar'], dir: 'libs')
   implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
-  implementation project(':capacitor-android')
+  // Capacitor is debug-only. The dedicated AAOS release source set excludes
+  // every phone bridge source and has no runtime or compile dependency on it.
+  if (findProject(':capacitor-android') != null) {
+    debugImplementation project(':capacitor-android')
+  }
 
   implementation 'androidx.constraintlayout:constraintlayout:2.2.1'
   implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
-
-  implementation project(':capacitor-cordova-android-plugins')
 
   implementation "androidx.core:core-ktx:$androidx_core_ktx_version"
 
@@ -133,6 +175,11 @@ dependencies {
     implementation "com.google.android.exoplayer:extension-mediasession:$exoplayer_version"
     implementation "com.google.android.exoplayer:exoplayer-hls:$exoplayer_version"
   }
+  implementation "com.google.android.exoplayer:extension-okhttp:$exoplayer_version"
+
+  // ExoPlayer 2.x resolves an older Guava. Keep the Android variant on the
+  // first patched line that clears its known temporary-file advisories.
+  implementation 'com.google.guava:guava:32.1.3-android'
 
   // Glide for images
   implementation "com.github.bumptech.glide:glide:$glide_version"
@@ -144,18 +191,16 @@ dependencies {
   implementation "com.anggrayudi:storage:1.5.6"
 
   // OK HTTP
-  implementation 'com.squareup.okhttp3:okhttp:4.9.2'
+  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
   // Jackson for JSON
-  implementation 'com.fasterxml.jackson.module:jackson-module-kotlin:2.12.2'
+  implementation 'com.fasterxml.jackson.module:jackson-module-kotlin:2.21.5'
 
   // Material Components for AAOS-friendly settings UI (switches, dropdowns, etc.)
   implementation 'com.google.android.material:material:1.12.0'
 
-  // MediaRouter provides ic_media_play_dark / ic_media_pause_dark drawables used
-  // by the home-screen widget. Previously pulled in transitively via the now-removed
-  // exoplayer extension-cast dependency.
-  implementation 'androidx.mediarouter:mediarouter:1.7.0'
+  testImplementation "junit:junit:$junitVersion"
+  testImplementation 'org.robolectric:robolectric:4.14.1'
+  testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
+  testImplementation 'com.squareup.okhttp3:okhttp-tls:4.12.0'
 }
-
-apply from: 'capacitor.build.gradle'

@@ -3,7 +3,11 @@ plugins {
 }
 
 include ':app'
-include ':capacitor-cordova-android-plugins'
-project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
 
-apply from: 'capacitor.settings.gradle'
+// The Play artifact is native AAOS-only and has no Capacitor dependency.
+// Keep the generated Capacitor project available for local debug builds when
+// npm dependencies are installed, but let release verification run from a
+// clean checkout with only the Android/JDK toolchain.
+if (file('../node_modules/@capacitor/android/capacitor').isDirectory()) {
+  apply from: 'capacitor.settings.gradle'
+}

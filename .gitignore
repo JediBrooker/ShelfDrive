@@ -96,3 +96,11 @@ sw.*
 /android/keystore.properties
 *.jks
 *.keystore
+
+# Local emulator scratch captures can contain private server addresses,
+# usernames, or licensed library artwork.
+/store/_capture/*
+
+# Historical foreground-service declaration media is not part of v130 and
+# must not be mistaken for current Play Console evidence.
+/store/play-console/

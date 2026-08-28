@@ -1,52 +1,63 @@
 # ShelfDrive Privacy Policy
 
-_Last updated: 2026-05-21_
+_Last updated: 2026-08-28_
 
 ShelfDrive is an independent, open-source client for self-hosted [Audiobookshelf](https://audiobookshelf.org) servers. It is published by Christian Brooker as a free, GPLv3-licensed app for Android Automotive OS.
 
-This policy explains what data ShelfDrive collects, where it goes, and what your rights are.
+This policy explains what data ShelfDrive handles, where it goes, and how you can delete it.
 
 ## Summary
 
-ShelfDrive does not collect, store, or transmit any personal data to the app's authors or to any third party. All data you enter into the app is sent only to the Audiobookshelf server **you provide**.
+ShelfDrive's developer does not operate an analytics, advertising, or ShelfDrive cloud service and does not receive your account or listening data. To provide its core features, the app does transmit data off your vehicle to the Audiobookshelf server whose HTTPS address you enter. That server may be operated by you or by another administrator and has its own logging, retention, and privacy practices.
 
-## What the app stores on your device
+## Data sent to your configured server
 
-- **Server connection details**: the URL, username, and access token for the Audiobookshelf server you sign in to. Stored locally on your car / device only. Used to authenticate API requests to your server.
-- **Playback preferences**: jump forward / jump backward intervals, auto-rewind toggle, sleep-timer settings. Stored locally only.
-- **Cached cover art**: book and podcast cover images are downloaded from your server and cached in the app's private cache directory to render the in-car browse view. The cache is automatically purged by Android when device storage is low. You can clear it manually via Settings → Apps → ShelfDrive → Storage → Clear Cache.
-- **Playback session state**: your current book, position, and recent playback history, so the app can resume where you left off. Synced with your Audiobookshelf server when online; not shared with anyone else.
+Depending on the feature used, ShelfDrive sends the following to the configured Audiobookshelf server:
 
-## What the app sends over the network
+- **Account information:** server address, username, and password during sign-in; the server returns a user ID and session tokens. The password is not stored by ShelfDrive.
+- **Device information:** a random install-scoped app-instance identifier, vehicle/device manufacturer and model, Android SDK version, and ShelfDrive version. Audiobookshelf uses this information to identify playback sessions.
+- **App activity:** library, browse, and search requests; selected titles; playback sessions; listening position, progress, and playback history needed for resume and synchronization.
+- **Media requests:** cover-art and audio-stream requests for the content in your library.
 
-- Standard Audiobookshelf API requests (sign-in, library listing, cover fetch, audio streaming, progress sync) to **the server URL you enter**. No traffic is sent to any other host.
-- Audio streams are fetched directly from your Audiobookshelf server.
+Production builds accept only HTTPS server addresses. ShelfDrive does not sell this data or send it to the ShelfDrive developer, advertisers, or data brokers.
 
-## What the app does **not** do
+## Data stored on your device
 
-- No analytics, telemetry, crash reporting, or advertising SDKs are integrated.
-- No data is sent to the app authors, Audiobookshelf project, Google, or any other third party from the app itself.
-- No location, contacts, microphone, or camera access is requested.
+- **Server profile:** server URL, username, user ID, display name, access token, and any custom connection headers in app-private storage. Refresh tokens are encrypted with an Android Keystore-backed AES-GCM key. Passwords are never stored.
+- **Android account record:** Android AccountManager stores only a non-secret ShelfDrive connection identifier, display name, and schema version. It stores no password, access token, refresh token, or custom authentication header.
+- **Playback preferences and state:** media-control, seek, sleep-timer, current-session, listening-position, and recent-playback data.
+- **Media files and artwork:** downloaded audio and ebooks you explicitly save, plus cached cover artwork used by the vehicle's system media interface.
 
-## Third-party services
+Android app sandboxing protects app-private files, and ShelfDrive disables Android backup of its application data.
 
-ShelfDrive is distributed through Google Play. Google Play Console may collect diagnostic and install data per its own [policies](https://policies.google.com/privacy). That data is not accessible to the ShelfDrive developer beyond aggregated install / crash counts shown in the Console.
+## What ShelfDrive does not do
 
-When connected to an Audiobookshelf server, that server has its own logs, retention, and policies which are under your or the server administrator's control.
+- No analytics, advertising, telemetry, or third-party crash-reporting SDK is integrated.
+- No location, contacts, microphone, or camera permission is requested.
+- No account or listening data is sent to the ShelfDrive developer or the Audiobookshelf project by the app.
 
-## Your rights
+## Google Play and your server operator
 
-- You can delete all local data at any time by uninstalling the app or clearing app storage in your car / device settings.
-- You can revoke ShelfDrive's access to your Audiobookshelf server by tapping **Disconnect** in the in-car settings or by removing the token on the server side.
+Google Play may process install and diagnostic information under [Google's Privacy Policy](https://policies.google.com/privacy). The ShelfDrive developer may see aggregated Play Console statistics and crash reports supplied by Google.
+
+Your configured Audiobookshelf server may retain account, request, device-session, and playback-progress records. Contact that server's administrator for its retention policy or to delete server-side records.
+
+## Deleting or controlling your data
+
+- Select **Disconnect** in ShelfDrive settings to remove that server profile, its session credentials, related saved playback sessions, and its Android account record from the vehicle.
+- Remove ShelfDrive from Android's account settings to remove the corresponding ShelfDrive server profile and credentials.
+- Clear ShelfDrive's cache to remove cached artwork.
+- Clear app storage or uninstall ShelfDrive to remove all app-private settings, credentials, cached artwork, and playback state. Remove explicitly downloaded media through the app or the device's storage controls.
+- Revoke active sessions or delete server-side history through Audiobookshelf or by contacting the server administrator.
 
 ## Open source
 
-The full source code is published at https://github.com/JediBrooker/ShelfDrive under the GPLv3 license. You can audit every network call and data store.
+The source code is published at https://github.com/JediBrooker/ShelfDrive under the GPLv3 license.
 
 ## Contact
 
-For questions or concerns about this policy, file a GitHub issue at https://github.com/JediBrooker/ShelfDrive/issues or email christianbrooker@gmail.com.
+For privacy questions, file a GitHub issue at https://github.com/JediBrooker/ShelfDrive/issues or email christianbrooker@gmail.com.
 
 ## Changes to this policy
 
-If this policy materially changes, the updated version will be committed to the same path in the repository (`PRIVACY_POLICY.md`) and the "Last updated" date at the top will reflect the change.
+Material changes will be published at this same URL and reflected in the “Last updated” date above.

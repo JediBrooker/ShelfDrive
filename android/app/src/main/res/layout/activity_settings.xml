@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/settingsRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
@@ -22,14 +23,14 @@
             android:background="?attr/selectableItemBackgroundBorderless"
             android:src="@drawable/ic_arrow_back_24"
             android:scaleType="center"
-            android:contentDescription="Back" />
+            android:contentDescription="@string/settings_back" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_vertical|start"
             android:layout_marginStart="92dp"
-            android:text="Settings"
+            android:text="@string/settings_title"
             android:textColor="#FFFFFF"
             android:textSize="32sp"
             android:fontFamily="sans-serif-medium" />
@@ -64,39 +65,42 @@
                 android:background="#1F262B"
                 android:textColor="#FF7E2D"
                 android:textSize="15sp"
-                android:text="Sign-in and settings changes are only available while parked." />
+                android:text="@string/settings_parked_only" />
 
             <!-- Server section -->
             <TextView
                 style="@style/SettingsSectionHeader"
-                android:text="SERVER" />
+                android:text="@string/settings_section_server" />
 
             <LinearLayout style="@style/SettingsRow">
-                <TextView style="@style/SettingsRowLabel" android:text="Server URL" />
+                <TextView style="@style/SettingsRowLabel" android:text="@string/settings_server_url" />
                 <EditText
                     android:id="@+id/serverUrl"
                     style="@style/SettingsRowInput"
-                    android:hint="https://example.com"
+                    android:hint="@string/settings_server_url_hint"
+                    android:importantForAutofill="no"
                     android:inputType="textUri" />
             </LinearLayout>
 
             <View style="@style/SettingsRowDivider" />
 
             <LinearLayout style="@style/SettingsRow">
-                <TextView style="@style/SettingsRowLabel" android:text="Username" />
+                <TextView style="@style/SettingsRowLabel" android:text="@string/settings_username" />
                 <EditText
                     android:id="@+id/username"
                     style="@style/SettingsRowInput"
+                    android:autofillHints="username"
                     android:inputType="text" />
             </LinearLayout>
 
             <View style="@style/SettingsRowDivider" />
 
             <LinearLayout style="@style/SettingsRow">
-                <TextView style="@style/SettingsRowLabel" android:text="Password" />
+                <TextView style="@style/SettingsRowLabel" android:text="@string/settings_password" />
                 <EditText
                     android:id="@+id/password"
                     style="@style/SettingsRowInput"
+                    android:autofillHints="password"
                     android:inputType="textPassword" />
             </LinearLayout>
 
@@ -109,8 +113,9 @@
                 android:paddingStart="32dp"
                 android:paddingEnd="32dp"
                 android:paddingTop="16dp"
-                android:textColor="#8AB4F8"
-                android:textSize="14sp"
+                android:textColor="@color/settings_status_info"
+                android:textSize="18sp"
+                android:accessibilityLiveRegion="polite"
                 android:text="" />
 
             <LinearLayout
@@ -126,7 +131,7 @@
                 <TextView
                     android:id="@+id/disconnectButton"
                     style="@style/SettingsButton.Outlined"
-                    android:text="Disconnect" />
+                    android:text="@string/settings_disconnect" />
 
                 <Space
                     android:layout_width="16dp"
@@ -135,18 +140,34 @@
                 <TextView
                     android:id="@+id/signInButton"
                     style="@style/SettingsButton.Primary"
-                    android:text="Sign in" />
+                    android:text="@string/car_sign_in_action" />
             </LinearLayout>
+
+            <View style="@style/SettingsSectionDivider" />
+
+            <TextView
+                style="@style/SettingsSectionHeader"
+                android:text="@string/settings_section_privacy" />
+
+            <TextView
+                android:id="@+id/privacyPolicyButton"
+                style="@style/SettingsButton.Outlined"
+                android:layout_gravity="end"
+                android:layout_marginStart="32dp"
+                android:layout_marginEnd="32dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginBottom="16dp"
+                android:text="@string/settings_privacy_policy" />
 
             <View style="@style/SettingsSectionDivider" />
 
             <!-- Playback section -->
             <TextView
                 style="@style/SettingsSectionHeader"
-                android:text="PLAYBACK" />
+                android:text="@string/settings_section_playback" />
 
             <LinearLayout style="@style/SettingsRow">
-                <TextView style="@style/SettingsRowLabel" android:text="Jump forward" />
+                <TextView style="@style/SettingsRowLabel" android:text="@string/settings_jump_forward" />
                 <Spinner
                     android:id="@+id/jumpForwardSpinner"
                     style="@style/SettingsRowSpinner" />
@@ -155,7 +176,7 @@
             <View style="@style/SettingsRowDivider" />
 
             <LinearLayout style="@style/SettingsRow">
-                <TextView style="@style/SettingsRowLabel" android:text="Jump backward" />
+                <TextView style="@style/SettingsRowLabel" android:text="@string/settings_jump_backward" />
                 <Spinner
                     android:id="@+id/jumpBackwardSpinner"
                     style="@style/SettingsRowSpinner" />
@@ -164,7 +185,7 @@
             <View style="@style/SettingsRowDivider" />
 
             <LinearLayout style="@style/SettingsRow">
-                <TextView style="@style/SettingsRowLabel" android:text="Disable auto-rewind" />
+                <TextView style="@style/SettingsRowLabel" android:text="@string/settings_disable_auto_rewind" />
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/disableAutoRewindSwitch"
                     android:layout_width="wrap_content"

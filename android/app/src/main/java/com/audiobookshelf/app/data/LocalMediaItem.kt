@@ -65,4 +65,10 @@ data class LocalMediaItem(
       PodcastMetadata(name, null, null, mutableListOf(), false)
     }
   }
+
+  /** Keep local media names, identifiers, document URIs, and paths out of diagnostics. */
+  override fun toString(): String =
+    "LocalMediaItem(mediaType=$mediaType, audioTrackCount=${audioTracks.size}, " +
+      "localFileCount=${localFiles.size}, hasEbook=${ebookFile != null}, " +
+      "identityAndPaths=<redacted>)"
 }

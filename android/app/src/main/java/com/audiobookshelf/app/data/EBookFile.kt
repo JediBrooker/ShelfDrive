@@ -10,4 +10,8 @@ data class EBookFile(
   var isLocal:Boolean,
   var localFileId:String?,
   var contentUrl:String?
-)
+) {
+  /** Keep remote content URLs and local file identity/path data out of diagnostics. */
+  override fun toString(): String =
+    "EBookFile(ebookFormat=$ebookFormat, isLocal=$isLocal, contentAndPaths=<redacted>)"
+}

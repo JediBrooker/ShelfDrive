@@ -1,7 +1,11 @@
 {
-	"appId": "com.jedibrooker.shelfdrive",
+	"appId": "com.jedibk.shelfdrive",
 	"appName": "ShelfDrive",
 	"webDir": "dist",
+	"loggingBehavior": "debug",
+	"android": {
+		"includePlugins": []
+	},
 	"plugins": {
 		"CapacitorHttp": {
 			"enabled": false
@@ -12,6 +16,6 @@
 		}
 	},
 	"server": {
-		"androidScheme": "http"
+		"androidScheme": "https"
 	}
 }

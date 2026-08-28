@@ -36,6 +36,12 @@ data class DownloadItemPart(
   var progress: Long,
   var bytesDownloaded: Long
 ) {
+  /** The download URI can contain a legacy access-token query parameter. */
+  override fun toString(): String =
+    "DownloadItemPart(completed=$completed, moved=$moved, isMoving=$isMoving, " +
+      "failed=$failed, progress=$progress, bytesDownloaded=$bytesDownloaded, " +
+      "identifiersAndUris=<redacted>)"
+
   companion object {
     fun make(downloadItemId:String, filename:String, fileSize: Long, destinationFile: File, finalDestinationFile: File, subfolder:String, serverPath:String, localFolder: LocalFolder, ebookFile: EBookFile?, audioTrack: AudioTrack?, episode: PodcastEpisode?) :DownloadItemPart {
       val destinationUri = Uri.fromFile(destinationFile)

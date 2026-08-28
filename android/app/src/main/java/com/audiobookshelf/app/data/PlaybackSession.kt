@@ -1,10 +1,7 @@
 package com.audiobookshelf.app.data
 
 import android.content.Context
-import android.graphics.ImageDecoder
 import android.net.Uri
-import android.os.Build
-import android.provider.MediaStore
 import android.util.Log
 import android.support.v4.media.MediaMetadataCompat
 import androidx.core.content.FileProvider
@@ -12,6 +9,7 @@ import androidx.core.net.toFile
 import com.audiobookshelf.app.BuildConfig
 import com.audiobookshelf.app.R
 import com.audiobookshelf.app.device.DeviceManager
+import com.audiobookshelf.app.device.ConnectionLease
 import com.audiobookshelf.app.media.MediaProgressSyncData
 import com.audiobookshelf.app.player.*
 import com.fasterxml.jackson.annotation.JsonIgnore
@@ -47,6 +45,15 @@ class PlaybackSession(
         var mediaPlayer: String?
 ) {
 
+  /** In-process authorization lifetime; deliberately excluded from persistence. */
+  @get:JsonIgnore
+  @field:Transient
+  var connectionLease: ConnectionLease? = null
+
+  /** Paper-only compare-and-delete token; never part of a server payload. */
+  @get:JsonIgnore
+  var persistenceToken: String? = null
+
   @get:JsonIgnore
   val isHLS
     get() = playMethod == PLAYMETHOD_TRANSCODE
@@ -61,10 +68,10 @@ class PlaybackSession(
     get() = mediaType == "podcast"
   @get:JsonIgnore
   val currentTimeMs
-    get() = (currentTime * 1000L).toLong()
+    get() = secondsToMillis(currentTime)
   @get:JsonIgnore
   val totalDurationMs
-    get() = (getTotalDuration() * 1000L).toLong()
+    get() = secondsToMillis(getTotalDuration())
   @get:JsonIgnore
   val localLibraryItemId
     get() = localLibraryItem?.id ?: ""
@@ -75,13 +82,22 @@ class PlaybackSession(
             else "$localLibraryItemId-$localEpisodeId"
   @get:JsonIgnore
   val progress
-    get() = currentTime / getTotalDuration()
+    get(): Double {
+      val totalDuration = getTotalDuration()
+      if (!currentTime.isFinite() || !totalDuration.isFinite() || totalDuration <= 0.0) return 0.0
+      return (currentTime / totalDuration).coerceIn(0.0, 1.0)
+    }
   @get:JsonIgnore
   val mediaItemId
-    get() = if (episodeId.isNullOrEmpty()) libraryItemId ?: "" else "$libraryItemId-$episodeId"
+    get() = if (!libraryItemId.isNullOrBlank()) {
+      if (episodeId.isNullOrEmpty()) libraryItemId ?: "" else "$libraryItemId-$episodeId"
+    } else {
+      localMediaProgressId.ifBlank { id }
+    }
 
   @JsonIgnore
   fun getCurrentTrackIndex(): Int {
+    if (audioTracks.isEmpty()) return 0
     for (i in 0 until audioTracks.size) {
       val track = audioTracks[i]
       if (currentTimeMs >= track.startOffsetMs && (track.endOffsetMs > currentTimeMs)) {
@@ -93,6 +109,7 @@ class PlaybackSession(
 
   @JsonIgnore
   fun getNextTrackIndex(): Int {
+    if (audioTracks.isEmpty()) return 0
     for (i in 0 until audioTracks.size) {
       val track = audioTracks[i]
       if (currentTimeMs < track.startOffsetMs) {
@@ -110,7 +127,7 @@ class PlaybackSession(
 
   @JsonIgnore
   fun getCurrentTrackEndTime(): Long {
-    val currentTrack = audioTracks[this.getCurrentTrackIndex()]
+    val currentTrack = audioTracks.getOrNull(this.getCurrentTrackIndex()) ?: return 0L
     return currentTrack.startOffsetMs + currentTrack.durationMs
   }
 
@@ -122,78 +139,111 @@ class PlaybackSession(
 
   @JsonIgnore
   fun getNextTrackEndTime(): Long {
-    val currentTrack = audioTracks[this.getNextTrackIndex()]
+    val currentTrack = audioTracks.getOrNull(this.getNextTrackIndex()) ?: return 0L
     return currentTrack.startOffsetMs + currentTrack.durationMs
   }
 
   @JsonIgnore
   fun getCurrentTrackTimeMs(): Long {
-    val currentTrack = audioTracks[this.getCurrentTrackIndex()]
+    val currentTrack = audioTracks.getOrNull(this.getCurrentTrackIndex()) ?: return 0L
     val time = currentTime - currentTrack.startOffset
-    return (time * 1000L).toLong()
+    return secondsToMillis(time)
   }
 
   @JsonIgnore
   fun getTrackStartOffsetMs(index: Int): Long {
     if (index < 0 || index >= audioTracks.size) return 0L
     val currentTrack = audioTracks[index]
-    return (currentTrack.startOffset * 1000L).toLong()
+    return secondsToMillis(currentTrack.startOffset)
   }
 
   @JsonIgnore
   fun getTotalDuration(): Double {
-    var total = 0.0
-    audioTracks.forEach { total += it.duration }
-    return total
+    val trackTotal = audioTracks.asSequence()
+      .map { it.duration }
+      .filter { it.isFinite() && it > 0.0 }
+      .sum()
+    if (trackTotal.isFinite() && trackTotal > 0.0) return trackTotal
+    return duration.takeIf { it.isFinite() && it > 0.0 } ?: 0.0
   }
 
   @JsonIgnore
-  fun checkIsServerVersionGte(compareVersion: String): Boolean {
-    // Safety check this playback session is the same one currently connected (should always be)
-    if (DeviceManager.serverConnectionConfigId != serverConnectionConfigId) {
-      return false
+  fun checkIsServerVersionGte(
+    compareVersion: String,
+    connectionConfig: ServerConnectionConfig? = DeviceManager.serverConnectionConfig
+  ): Boolean {
+    val config = connectionConfig ?: return false
+    if (config.id != serverConnectionConfigId) return false
+    if (compareVersion.isBlank()) return true
+    val serverParts = config.version.orEmpty().split('.').map { it.toIntOrNull() ?: 0 }
+    val compareParts = compareVersion.split('.').map { it.toIntOrNull() ?: 0 }
+    for (index in 0 until maxOf(serverParts.size, compareParts.size)) {
+      val serverPart = serverParts.getOrElse(index) { 0 }
+      val comparePart = compareParts.getOrElse(index) { 0 }
+      if (serverPart != comparePart) return serverPart > comparePart
     }
-
-    return DeviceManager.isServerVersionGreaterThanOrEqualTo(compareVersion)
+    return true
   }
 
   @JsonIgnore
   fun getCoverUri(ctx: Context): Uri {
-    if (localLibraryItem?.coverContentUrl != null) {
-      var coverUri = Uri.parse(localLibraryItem?.coverContentUrl.toString())
-      if (coverUri.toString().startsWith("file:")) {
-        coverUri =
-                FileProvider.getUriForFile(
-                        ctx,
-                        "${ctx.packageName}.fileprovider",
-                        coverUri.toFile()
-                )
+    val fallback = fallbackCoverUri()
+    localLibraryItem?.coverContentUrl?.let { rawCover ->
+      val parsed = runCatching { Uri.parse(rawCover) }.getOrNull() ?: return@let
+      if (parsed.scheme == "file") {
+        return runCatching {
+          FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", parsed.toFile())
+        }.onFailure { error ->
+          Log.w(
+            "PlaybackSession",
+            "Ignoring stale or inaccessible local cover (${error.javaClass.simpleName})"
+          )
+        }.getOrDefault(fallback)
       }
-
-      return coverUri
-              ?: Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
+      if (parsed.scheme == "content" &&
+        parsed.authority == "${BuildConfig.APPLICATION_ID}.fileprovider"
+      ) return parsed
+      if (parsed.scheme == "android.resource" &&
+        parsed.authority == BuildConfig.APPLICATION_ID &&
+        parsed.pathSegments.size == 2 &&
+        parsed.pathSegments[0] == "drawable" &&
+        parsed.pathSegments[1].isNotBlank() &&
+        parsed.pathSegments[1].any { !it.isDigit() }
+      ) {
+        return parsed
+      }
+      return fallback
     }
 
-    if (coverPath == null)
-            return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
+    if (coverPath == null) return fallback
 
     // Prefer the on-disk cover cache (served via FileProvider) when available,
     // so cross-process readers can fetch without our server auth.
-    libraryItemId?.let { DeviceManager.coverCache?.cachedUri(it)?.let { uri -> return uri } }
-
-    // As of v2.17.0 token is not needed with cover image requests
-    if (checkIsServerVersionGte("2.17.0")) {
-      return Uri.parse("$serverAddress/api/items/$libraryItemId/cover")
+    val lease = connectionLease
+    val ownerConfig = lease?.let(DeviceManager::getServerConnectionConfig)
+    libraryItemId?.takeIf { it.isNotBlank() }?.let { itemId ->
+      if (lease != null && ownerConfig != null) {
+        DeviceManager.coverCache?.cachedUri(itemId, ownerConfig, lease)?.let { uri -> return uri }
+      }
     }
-    return Uri.parse("$serverAddress/api/items/$libraryItemId/cover?token=${DeviceManager.token}")
+
+    // AAOS requires playing-item artwork to be local too. CoverCache fetches
+    // remote artwork privately and the service republishes metadata once a
+    // FileProvider URI is ready; until then use the owned resource fallback.
+    return fallback
   }
 
   @JsonIgnore
-  fun getContentUri(audioTrack: AudioTrack): Uri {
+  fun getContentUri(
+    audioTrack: AudioTrack,
+    connectionConfig: ServerConnectionConfig? = DeviceManager.serverConnectionConfig
+  ): Uri {
     if (isLocal) return Uri.parse(audioTrack.contentUrl) // Local content url
+    val config = connectionConfig ?: return Uri.EMPTY
+    if (config.id != serverConnectionConfigId) return Uri.EMPTY
     // As of v2.22.0 tracks use a different endpoint
     // See: https://github.com/advplyr/audiobookshelf/pull/4263
-    if (checkIsServerVersionGte("2.22.0")) {
+    if (checkIsServerVersionGte("2.22.0", config)) {
       return if (isDirectPlay) {
         Uri.parse("$serverAddress/public/session/$id/track/${audioTrack.index}")
       } else {
@@ -201,7 +251,10 @@ class PlaybackSession(
         Uri.parse("$serverAddress${audioTrack.contentUrl}")
       }
     }
-    return Uri.parse("$serverAddress${audioTrack.contentUrl}?token=${DeviceManager.token}")
+    return Uri.parse("$serverAddress${audioTrack.contentUrl}")
+      .buildUpon()
+      .appendQueryParameter("token", config.token)
+      .build()
   }
 
   @JsonIgnore
@@ -226,27 +279,6 @@ class PlaybackSession(
                             coverUri.toString()
                     )
 
-    // Bake the cover bitmap into the metadata for any content:// URI (local
-     // download OR CoverCache-served server cover). This is what the Polestar
-     // home tile reads for its background — URI-only metadata renders as the
-     // plain app icon. Skip remote https:// to avoid blocking the main thread.
-    if (coverUri.scheme == "content" || coverUri.scheme == "file") {
-      try {
-        val bitmap =
-                if (Build.VERSION.SDK_INT < 28) {
-                  MediaStore.Images.Media.getBitmap(ctx.contentResolver, coverUri)
-                } else {
-                  val source: ImageDecoder.Source =
-                          ImageDecoder.createSource(ctx.contentResolver, coverUri)
-                  ImageDecoder.decodeBitmap(source)
-                }
-        metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
-        metadataBuilder.putBitmap(MediaMetadataCompat.METADATA_KEY_ART, bitmap)
-      } catch (error: Exception) {
-        Log.e("PlaybackSession", "Failed to decode cover bitmap from $coverUri", error)
-      }
-    }
-
     return metadataBuilder.build()
   }
 
@@ -270,16 +302,21 @@ class PlaybackSession(
   }
 
   @JsonIgnore
-  fun getMediaItems(ctx: Context): List<MediaItem> {
+  fun getMediaItems(
+    ctx: Context,
+    connectionConfig: ServerConnectionConfig? = DeviceManager.serverConnectionConfig
+  ): List<MediaItem> {
     val mediaItems: MutableList<MediaItem> = mutableListOf()
 
     for (audioTrack in audioTracks) {
       val mediaMetadata = this.getExoMediaMetadata(ctx)
-      val mediaUri = this.getContentUri(audioTrack)
+      val mediaUri = this.getContentUri(audioTrack, connectionConfig)
+      if (mediaUri == Uri.EMPTY) continue
       val mimeType = audioTrack.mimeType
 
       val mediaItem =
               MediaItem.Builder()
+                      .setMediaId(id)
                       .setUri(mediaUri)
                       .setMediaMetadata(mediaMetadata)
                       .setMimeType(mimeType)
@@ -299,7 +336,7 @@ class PlaybackSession(
             mediaType,
             mediaMetadata,
             deviceInfo,
-            chapters,
+            chapters.toList(),
             displayTitle,
             displayAuthor,
             coverPath,
@@ -308,7 +345,7 @@ class PlaybackSession(
             startedAt,
             updatedAt,
             timeListening,
-            audioTracks,
+            audioTracks.toMutableList(),
             currentTime,
             libraryItem,
             localLibraryItem,
@@ -316,14 +353,51 @@ class PlaybackSession(
             serverConnectionConfigId,
             serverAddress,
             mediaPlayer
-    )
+    ).also { copy ->
+      copy.connectionLease = connectionLease
+      copy.persistenceToken = persistenceToken
+    }
+  }
+
+  /**
+   * Downloaded audio remains usable after disconnect, but no later checkpoint,
+   * history row, or local-progress write may resurrect the removed server's
+   * identity. Remote sessions are returned unchanged and rejected by their
+   * normal lease gates.
+   */
+  @JsonIgnore
+  fun copySanitizedForPersistence(): PlaybackSession = clone().also { copy ->
+    if (!copy.isLocal) return@also
+    val ownerId = copy.serverConnectionConfigId
+    val lease = copy.connectionLease
+    val ownerIsCurrent = !ownerId.isNullOrBlank() &&
+      lease != null && lease.connectionId == ownerId &&
+      DeviceManager.isConnectionLeaseCurrent(lease)
+    if (!ownerIsCurrent) {
+      copy.userId = null
+      copy.libraryItemId = null
+      copy.episodeId = null
+      copy.libraryItem = null
+      copy.localLibraryItem = copy.localLibraryItem?.copyWithoutServerIdentity()
+      copy.serverConnectionConfigId = null
+      copy.serverAddress = null
+      copy.connectionLease = null
+    }
   }
 
   @JsonIgnore
   fun syncData(syncData: MediaProgressSyncData) {
-    timeListening += syncData.timeListened
+    val listened = syncData.timeListened.coerceAtLeast(0L)
+    timeListening = if (Long.MAX_VALUE - timeListening.coerceAtLeast(0L) < listened) {
+      Long.MAX_VALUE
+    } else {
+      timeListening.coerceAtLeast(0L) + listened
+    }
     updatedAt = System.currentTimeMillis()
     currentTime = syncData.currentTime
+      .takeIf { it.isFinite() }
+      ?.coerceIn(0.0, getTotalDuration().takeIf { it > 0.0 } ?: Double.MAX_VALUE)
+      ?: 0.0
   }
 
   @JsonIgnore
@@ -347,5 +421,14 @@ class PlaybackSession(
             libraryItemId,
             episodeId
     )
+  }
+
+  private fun fallbackCoverUri(): Uri =
+    Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
+
+  private fun secondsToMillis(seconds: Double): Long {
+    if (!seconds.isFinite() || seconds <= 0.0) return 0L
+    val maxSeconds = Long.MAX_VALUE.toDouble() / 1000.0
+    return if (seconds >= maxSeconds) Long.MAX_VALUE else (seconds * 1000.0).toLong()
   }
 }

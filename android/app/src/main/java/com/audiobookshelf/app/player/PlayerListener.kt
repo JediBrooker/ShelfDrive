@@ -9,18 +9,36 @@ import com.google.android.exoplayer2.Player
 
 //const val PAUSE_LEN_BEFORE_RECHECK = 30000 // 30 seconds
 
-class PlayerListener(var playerNotificationService:PlayerNotificationService) : Player.Listener {
+internal data class PlaybackListenerToken(
+  val generation: Long,
+  val sourceSession: PlaybackSession
+)
+
+internal class PlayerListener(
+  var playerNotificationService: PlayerNotificationService,
+  private val boundToken: PlaybackListenerToken? = null
+) : Player.Listener {
   var tag = "PlayerListener"
 
-  companion object {
-    var lastPauseTime: Long = 0   //ms
-    var lazyIsPlaying: Boolean = false
+  private var lastPauseTime: Long = 0   //ms
+  private var lazyIsPlaying: Boolean = false
+
+  @Synchronized
+  fun resetForSession() {
+    lastPauseTime = 0L
+    lazyIsPlaying = false
   }
 
   override fun onPlayerError(error: PlaybackException) {
-    val errorMessage = error.message ?: "Unknown Error"
-    Log.e(tag, "onPlayerError $errorMessage")
-    playerNotificationService.handlePlayerPlaybackError(errorMessage) // If was direct playing session, fallback to transcode
+    if (!playerNotificationService.isPlaybackListenerCurrent(boundToken)) return
+    // ExoPlayer messages may include the full media URL. Older servers put an
+    // access token in that URL, so log and surface only the stable error code.
+    val safeErrorMessage = "Playback failed (${error.errorCodeName})"
+    Log.e(tag, "onPlayerError code=${error.errorCode} name=${error.errorCodeName}")
+    playerNotificationService.handlePlayerPlaybackError(
+      safeErrorMessage,
+      boundToken
+    ) // If was direct playing session, fallback to transcode
   }
 
   override fun onPositionDiscontinuity(
@@ -28,6 +46,7 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
     newPosition: Player.PositionInfo,
     reason: Int
   ) {
+    if (!playerNotificationService.isPlaybackListenerCurrent(boundToken)) return
     if (reason == Player.DISCONTINUITY_REASON_SEEK) {
       // If playing set seeking flag
       Log.d(tag, "onPositionDiscontinuity: oldPosition=${oldPosition.positionMs}/${oldPosition.mediaItemIndex}, newPosition=${newPosition.positionMs}/${newPosition.mediaItemIndex}, isPlaying=${playerNotificationService.currentPlayer.isPlaying} reason=SEEK")
@@ -39,14 +58,36 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
   }
 
   override fun onIsPlayingChanged(isPlaying: Boolean) {
+    if (!playerNotificationService.isPlaybackListenerCurrent(boundToken)) return
     Log.d(tag, "onIsPlayingChanged to $isPlaying | ${playerNotificationService.getMediaPlayer()} | playbackState=${playerNotificationService.currentPlayer.playbackState}")
 
     val player = playerNotificationService.currentPlayer
 
+    if (isPlaying) {
+      playerNotificationService.currentPlaybackSession?.let { playbackSession ->
+        if (playerNotificationService.mediaProgressSyncer.resumeAfterBuffering(playbackSession)) {
+          Log.d(tag, "onIsPlayingChanged: active-time accounting resumed after buffering")
+        }
+      }
+    }
+
     // Goal of these 2 if statements and the lazyIsPlaying is to ignore this event when it is triggered by a seek
     //  When a seek occurs the player is paused and buffering, then plays again right afterwards.
-    if (!isPlaying && player.playbackState == Player.STATE_BUFFERING) {
-      Log.d(tag, "onIsPlayingChanged: Pause event when buffering is ignored")
+    if (!isPlaying && player.playbackState == Player.STATE_BUFFERING && player.playWhenReady) {
+      playerNotificationService.mediaProgressSyncer.suspendForBuffering()
+      Log.d(tag, "onIsPlayingChanged: buffering excluded from active listening time")
+      return
+    }
+    // Exo emits isPlaying=false immediately before the ENDED event. Completion
+    // handling must perform the one final Finished sync (and podcast auto-next);
+    // treating this transition as Pause cancels that timer first.
+    if (!isPlaying && player.playbackState == Player.STATE_ENDED &&
+      playerNotificationService.handlesEndedPlaybackAsCompletion()
+    ) {
+      lazyIsPlaying = false
+      DeviceManager.widgetUpdater?.onPlayerChanged(playerNotificationService)
+      playerNotificationService.clientEventEmitter?.onPlayingUpdate(false)
+      Log.d(tag, "onIsPlayingChanged: Natural end is owned by completion sync")
       return
     }
     if (lazyIsPlaying == isPlaying) {
@@ -96,7 +137,10 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
 
     // Start/stop progress sync interval
     if (isPlaying) {
-      val playbackSession: PlaybackSession? = playerNotificationService.mediaProgressSyncer.currentPlaybackSession ?: playerNotificationService.currentPlaybackSession
+      // The player service is authoritative. A paused syncer deliberately
+      // retains its last snapshot until cleanup, so preferring that snapshot
+      // can attribute newly prepared account/item B audio to old session A.
+      val playbackSession: PlaybackSession? = playerNotificationService.currentPlaybackSession
       playbackSession?.let {
         // Handles auto-starting sleep timer and resetting sleep timer
         playerNotificationService.sleepTimerManager.handleMediaPlayEvent(it.id)
@@ -114,7 +158,17 @@ class PlayerListener(var playerNotificationService:PlayerNotificationService) : 
     playerNotificationService.clientEventEmitter?.onPlayingUpdate(isPlaying)
   }
 
+  override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+    if (!playerNotificationService.isPlaybackListenerCurrent(boundToken)) return
+    // isPlaying is already false throughout a stall, so ExoPlayer may not emit
+    // another onIsPlayingChanged callback when the user presses Pause there.
+    if (!playWhenReady && playerNotificationService.mediaProgressSyncer.isSuspendedForBuffering) {
+      onIsPlayingChanged(false)
+    }
+  }
+
   override fun onEvents(player: Player, events: Player.Events) {
+    if (!playerNotificationService.isPlaybackListenerCurrent(boundToken)) return
     Log.d(tag, "onEvents ${playerNotificationService.getMediaPlayer()} | ${events.size()}")
 
     if (events.contains(Player.EVENT_POSITION_DISCONTINUITY)) {

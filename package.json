@@ -17,14 +17,14 @@
     "@webnativellc/capacitor-filesharer": "7.0.4",
     "@capacitor-community/keep-awake": "^7.0.0",
     "@capacitor-community/volume-buttons": "^7.0.0",
-    "@capacitor/android": "^7.0.0",
+    "@capacitor/android": "7.6.8",
     "@capacitor/app": "^7.0.0",
     "@capacitor/browser": "^7.0.0",
     "@capacitor/clipboard": "^7.0.0",
-    "@capacitor/core": "^7.0.0",
+    "@capacitor/core": "7.6.8",
     "@capacitor/dialog": "^7.0.0",
     "@capacitor/haptics": "^7.0.0",
-    "@capacitor/ios": "^7.0.0",
+    "@capacitor/ios": "7.6.8",
     "@capacitor/network": "^7.0.0",
     "@capacitor/preferences": "^7.0.0",
     "@capacitor/status-bar": "^7.0.0",
@@ -44,9 +44,9 @@
     "vuedraggable": "^2.24.3"
   },
   "devDependencies": {
-    "@capacitor/cli": "^6.0.0",
+    "@capacitor/cli": "7.6.8",
     "autoprefixer": "^10.4.17",
-    "postcss": "^8.4.33",
+    "postcss": "8.5.26",
     "tailwindcss": "^3.4.1"
   }
 }

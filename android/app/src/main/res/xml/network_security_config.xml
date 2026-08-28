@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-  <base-config cleartextTrafficPermitted="true">
+  <!-- Credentials, access tokens, device identifiers, and playback activity
+       must never cross the network without transport encryption. Production
+       trusts only platform certificate authorities; debug keeps user-CA
+       support for local/self-hosted development. -->
+  <base-config cleartextTrafficPermitted="false">
     <trust-anchors>
-      <certificates src="user"/>
       <certificates src="system"/>
     </trust-anchors>
   </base-config>

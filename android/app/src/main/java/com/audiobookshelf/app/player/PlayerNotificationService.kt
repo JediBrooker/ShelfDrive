@@ -1,18 +1,14 @@
 package com.audiobookshelf.app.player
 
-import android.annotation.SuppressLint
 import android.app.*
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
+import android.content.pm.ApplicationInfo
 import android.graphics.Color
-import android.graphics.ImageDecoder
 import android.hardware.Sensor
 import android.hardware.SensorManager
 import android.net.*
 import android.os.*
-import android.provider.MediaStore
-import android.provider.Settings
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.MediaDescriptionCompat
 import android.support.v4.media.MediaMetadataCompat
@@ -22,17 +18,19 @@ import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.utils.MediaConstants
 import com.audiobookshelf.app.BuildConfig
-import com.audiobookshelf.app.MainActivity
 import com.audiobookshelf.app.R
 import com.audiobookshelf.app.SettingsActivity
+import com.audiobookshelf.app.accounts.ServerConnectionAccountRegistry
+import com.audiobookshelf.app.accounts.ShelfDriveConnectionDataCleaner
 import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.data.DeviceInfo
+import com.audiobookshelf.app.device.ConnectionLease
 import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.managers.DbManager
+import com.audiobookshelf.app.managers.SecureStorage
 import com.audiobookshelf.app.managers.SleepTimerManager
 import com.audiobookshelf.app.media.MediaManager
 import com.audiobookshelf.app.media.MediaProgressSyncer
@@ -40,11 +38,13 @@ import com.audiobookshelf.app.media.getUriToAbsIconDrawable
 import com.audiobookshelf.app.media.getUriToDrawable
 import com.audiobookshelf.app.plugins.AbsLogger
 import com.audiobookshelf.app.server.ApiHandler
+import com.audiobookshelf.app.util.AppInstanceId
 import com.google.android.exoplayer2.*
 import com.google.android.exoplayer2.audio.AudioAttributes
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
 import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector.CustomActionProvider
 import com.google.android.exoplayer2.ext.mediasession.TimelineQueueNavigator
+import com.google.android.exoplayer2.ext.okhttp.OkHttpDataSource
 import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
 import com.google.android.exoplayer2.extractor.mp3.Mp3Extractor
 import com.google.android.exoplayer2.source.MediaSource
@@ -52,9 +52,15 @@ import com.google.android.exoplayer2.source.ProgressiveMediaSource
 import com.google.android.exoplayer2.source.hls.HlsMediaSource
 import com.google.android.exoplayer2.ui.PlayerNotificationManager
 import com.google.android.exoplayer2.upstream.*
-import java.util.*
-import kotlin.concurrent.schedule
+import java.io.File
+import java.lang.ref.WeakReference
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.runBlocking
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
 
 const val SLEEP_TIMER_WAKE_UP_EXPIRATION = 120000L // 2m
 const val PLAYER_EXO = "exo-player"
@@ -63,17 +69,52 @@ const val PLAYER_EXO = "exo-player"
 // The manifest registers the android.media.browse.MediaBrowserService
 // intent-filter, so AAOS / Android Auto hosts bind here and drive the in-car
 // UI through onGetRoot / onLoadChildren and the browseTree below. Caller
-// packages are gated in isValid() / VALID_MEDIA_BROWSERS.
+// packages are gated by package/UID and trusted-media-controller validation.
 class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   companion object {
-    var isStarted = false
     var isClosed = false
     var isUnmeteredNetwork = false
     var hasNetworkConnectivity = false // Not 100% reliable has internet
+
+    @Volatile private var activeInstance: WeakReference<PlayerNotificationService>? = null
+
+    /**
+     * Finish the underlying root load before the detached browser request's
+     * deadline. The small gap prevents two main-thread timeout callbacks from
+     * racing to publish conflicting service state.
+     */
+    internal const val BROWSE_LOAD_TIMEOUT_MS = 7_500L
+    internal const val BROWSE_RESULT_TIMEOUT_MS = 8_000L
+    private const val MAX_SAVED_SESSION_RETRIES_PER_START = 50
+
+    private val KNOWN_PLAYBACK_ARTWORK_SYSTEM_PACKAGES = listOf(
+      "com.android.systemui",
+      "com.android.car.media",
+      "com.google.android.carassistant",
+      "com.google.android.projection.gearhead",
+      "com.volvocars.launcher"
+    )
+
+    fun requestBrowseRefresh(reason: String) {
+      activeInstance?.get()?.let { service ->
+        // Account and token callbacks run off-main. Invalidate generations
+        // before posting UI work so an older response cannot republish a
+        // removed profile during that queueing window.
+        service.invalidateRemoteWorkForBrowseRefresh()
+        Handler(Looper.getMainLooper()).post {
+          if (service.isServiceAlive()) {
+            service.refreshAndroidAutoBrowseTree(reason)
+          }
+        }
+      }
+    }
   }
 
   private val tag = "PlayerNotificationServ"
+  private val mainHandler = Handler(Looper.getMainLooper())
+  @Volatile private var serviceDestroyed = false
+  @Volatile private var networkCallbackRegistered = false
 
   interface ClientEventEmitter {
     fun onPlaybackSession(playbackSession: PlaybackSession)
@@ -91,8 +132,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     fun onMediaItemHistoryUpdated(mediaItemHistory: MediaItemHistory)
     fun onPlaybackSpeedChanged(playbackSpeed: Float)
   }
-  private val binder = LocalBinder()
-
   var clientEventEmitter: ClientEventEmitter? = null
 
   private lateinit var ctx: Context
@@ -100,22 +139,66 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   private lateinit var playerNotificationManager: PlayerNotificationManager
   lateinit var mediaSession: MediaSessionCompat
   private lateinit var transportControls: MediaControllerCompat.TransportControls
+  private var mediaSessionCallback: MediaSessionCallback? = null
+  private var mediaDescriptionAdapter: AbMediaDescriptionAdapter? = null
 
   lateinit var mediaManager: MediaManager
   lateinit var apiHandler: ApiHandler
 
   lateinit var mPlayer: ExoPlayer
   lateinit var currentPlayer: Player
+  private lateinit var playerListener: PlayerListener
 
   lateinit var sleepTimerManager: SleepTimerManager
   lateinit var mediaProgressSyncer: MediaProgressSyncer
 
   private var notificationId = 10
   private var channelId = "audiobookshelf_channel"
-  private var channelName = "Audiobookshelf Channel"
 
-  var currentPlaybackSession: PlaybackSession? = null
+  @Volatile var currentPlaybackSession: PlaybackSession? = null
   private var initialPlaybackRate: Float? = null
+
+  /**
+   * Invalidates recovery/renewal/auto-next callbacks when Stop, another
+   * prepare, account recovery, or service teardown wins the race.
+   */
+  private val playbackOperationGeneration = AtomicLong(0L)
+  private val playbackListenerGeneration = AtomicLong(0L)
+  private val playbackEndLock = Any()
+  private var endingPlaybackSession: PlaybackSession? = null
+  private data class PlaybackOperationToken(
+    val generation: Long,
+    val sourceSession: PlaybackSession
+  )
+
+  private fun beginPlaybackOperation(session: PlaybackSession): PlaybackOperationToken =
+    PlaybackOperationToken(playbackOperationGeneration.incrementAndGet(), session)
+
+  private fun isPlaybackOperationSessionCurrent(token: PlaybackOperationToken): Boolean =
+    !serviceDestroyed &&
+      playbackOperationGeneration.get() == token.generation &&
+      currentPlaybackSession === token.sourceSession
+
+  private fun isPlaybackOperationCurrent(token: PlaybackOperationToken): Boolean =
+    isPlaybackOperationSessionCurrent(token) &&
+      (token.sourceSession.isLocal || token.sourceSession.connectionLease?.let {
+        DeviceManager.isConnectionLeaseCurrent(it)
+      } == true)
+
+  private fun invalidatePlaybackOperations() {
+    synchronized(playbackEndLock) {
+      playbackOperationGeneration.incrementAndGet()
+      endingPlaybackSession = null
+    }
+  }
+
+  /** Claim one terminal transition for an exact session despite duplicate Exo callbacks. */
+  private fun beginPlaybackEndOperation(session: PlaybackSession): PlaybackOperationToken? =
+    synchronized(playbackEndLock) {
+      if (endingPlaybackSession === session) return@synchronized null
+      endingPlaybackSession = session
+      beginPlaybackOperation(session)
+    }
 
   private var isAndroidAuto = false
 
@@ -124,15 +207,41 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   private var mSensorManager: SensorManager? = null
   private var mAccelerometer: Sensor? = null
   private var mShakeDetector: ShakeDetector? = null
-  private var shakeSensorUnregisterTask: TimerTask? = null
+  private val shakeSensorUnregisterRunnable = Runnable {
+    if (serviceDestroyed) return@Runnable
+    Log.d(tag, "wake time expired: Unregistering shake sensor")
+    mSensorManager?.unregisterListener(mShakeDetector)
+    isShakeSensorRegistered = false
+  }
 
   // These are used to trigger reloading if
   private var forceReloadingAndroidAuto: Boolean = false
-  private var firstLoadDone: Boolean = false
+  private var lastRootLoadSucceeded: Boolean = false
+  private var browseTreeLoading: Boolean = false
+  private var browseTreeLoadGeneration: Int = 0
+  private var browseTreeLoadingConfigId: String? = null
+  private var browseTreeReloadQueued: Boolean = false
+  private var queuedBrowseHasOfflineMedia: Boolean = false
+  private val browseTreeLoadListeners = mutableListOf<(Boolean) -> Unit>()
+  private val browseExecutor = Executors.newSingleThreadExecutor { task ->
+    Thread(task, "ShelfDrive-AAOS-browse")
+  }
+  private val accountMaintenanceExecutor = Executors.newSingleThreadExecutor { task ->
+    Thread(task, "ShelfDrive-account-maintenance")
+  }
+  private val playbackPersistenceExecutor = Executors.newSingleThreadExecutor { task ->
+    Thread(task, "ShelfDrive-playback-persistence")
+  }
+  private val playbackHttpClient = OkHttpClient.Builder()
+    .followRedirects(true)
+    // Never turn an HTTPS media request into cleartext (or vice versa).
+    .followSslRedirects(false)
+    .build()
+  @Volatile private var browseFuture: Future<*>? = null
+  private var browseTreeTimeout: Runnable? = null
 
   // True while the Car Media "sign in" error state is being surfaced because no
   // server connection is configured. Used to throttle redundant state sets/logs.
-  private var signInPromptActive: Boolean = false
 
   fun isBrowseTreeInitialized(): Boolean {
     return this::browseTree.isInitialized
@@ -141,6 +250,40 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   // Cache latest search so it wont trigger again when returning from series for example
   private var cachedSearch: String = ""
   private var cachedSearchResults: MutableList<MediaBrowserCompat.MediaItem> = mutableListOf()
+  private lateinit var browseResultTree: BrowseResultTree
+  private val pendingColdBrowseRestores = PendingBrowseRestoreTracker()
+  private var browseEnrichmentGeneration = -1
+  private var browseEnrichmentCallbacksRemaining = 0
+  @Volatile private var searchGeneration: Int = 0
+  private val searchExecutor = Executors.newSingleThreadExecutor { task ->
+    Thread(task, "ShelfDrive-AAOS-search")
+  }
+  @Volatile private var searchFuture: Future<*>? = null
+  private val browseCoverPrefetchGate = BrowseCoverPrefetchGate()
+
+  internal fun isServiceAlive(): Boolean = !serviceDestroyed
+
+  private fun getLocalDownloadForCurrentServer(libraryItemId: String): LocalLibraryItem? =
+    DeviceManager.dbManager.getLocalLibraryItemByLId(
+      libraryItemId,
+      DeviceManager.serverConnectionConfigId
+    )
+
+  private fun invalidateRemoteWorkForBrowseRefresh() {
+    if (serviceDestroyed || !this::mediaManager.isInitialized) return
+    mediaManager.checkResetServerItems(forceReset = true)
+    mediaSessionCallback?.invalidatePendingPreparation()
+    if (this::mediaProgressSyncer.isInitialized) {
+      mediaProgressSyncer.invalidateRemovedConnection()
+    }
+  }
+
+  private fun postToMainIfAlive(action: () -> Unit) {
+    if (serviceDestroyed) return
+    mainHandler.post {
+      if (!serviceDestroyed) action()
+    }
+  }
 
   /*
      Service related stuff
@@ -153,19 +296,55 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       Log.d(tag, "Is Media Browser Service")
       return super.onBind(intent)
     }
-    return binder
+    // The dedicated AAOS artifact has no in-process UI client. Expose only the
+    // MediaBrowser binder above and reject every arbitrary exported bind.
+    return null
   }
 
+  /** Legacy phone-shell type retained for source compatibility; never exported. */
   inner class LocalBinder : Binder() {
-    // Return this instance of LocalService so clients can call public methods
     fun getService(): PlayerNotificationService = this@PlayerNotificationService
   }
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-    isStarted = true
     Log.d(tag, "onStartCommand $startId")
+    // MediaButtonReceiver and AAOS use the validated MediaBrowser binder. The
+    // app has no legitimate started-service path; discard explicit external
+    // starts so an arbitrary app cannot keep this exported service alive.
+    stopSelfResult(startId)
+    return START_NOT_STICKY
+  }
 
-    return START_STICKY
+  private fun refreshAndroidAutoBrowseTree(reason: String) {
+    if (serviceDestroyed || !this::mediaManager.isInitialized) {
+      Log.d(tag, "refreshAndroidAutoBrowseTree skipped before mediaManager initialization")
+      return
+    }
+
+    AbsLogger.info(tag, "refreshAndroidAutoBrowseTree: $reason")
+    cachedSearch = ""
+    cachedSearchResults.clear()
+    browseResultTree.clear()
+    clearPendingColdBrowseRestores()
+    searchGeneration++
+    searchFuture?.cancel(true)
+    searchFuture = null
+    if (DeviceManager.serverConnectionConfig == null) {
+      DeviceManager.serverConnectionConfig =
+              DeviceManager.getLastServerConnectionConfig()
+    }
+    // Account removal and permanent token-refresh rejection both arrive here.
+    // Validate the current session's owner before considering an unrelated
+    // selected account; account B cannot authorize buffered audio from A.
+    if (!publishSignInRequiredForPlaybackIfNeeded(currentPlaybackSession) &&
+      DeviceManager.serverConnectionConfig != null
+    ) {
+      clearFatalPlaybackErrorState()
+    }
+    mediaManager.checkResetServerItems(forceReset = true)
+    forceReloadingAndroidAuto = true
+    lastRootLoadSucceeded = false
+    notifyChildrenChanged(AUTO_MEDIA_ROOT)
   }
 
   @Deprecated("Deprecated in Java")
@@ -174,8 +353,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   @RequiresApi(Build.VERSION_CODES.O)
-  private fun createNotificationChannel(channelId: String, channelName: String): String {
-    val chan = NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW)
+  private fun createNotificationChannel(channelId: String): String {
+    val chan =
+            NotificationChannel(
+                    channelId,
+                    getString(R.string.playback_notification_channel_name),
+                    NotificationManager.IMPORTANCE_LOW
+            )
+    chan.description = getString(R.string.playback_notification_channel_description)
     chan.lightColor = Color.DKGRAY
     chan.lockscreenVisibility = Notification.VISIBILITY_PUBLIC
     val service = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -185,24 +370,95 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   // detach player
   override fun onDestroy() {
+    // Invalidate asynchronous work before releasing any object it can touch.
+    // Android/OEM callbacks may already be queued when teardown begins.
+    serviceDestroyed = true
+    playbackListenerGeneration.incrementAndGet()
+    if (this::mPlayer.isInitialized && this::playerListener.isInitialized) {
+      runCatching { mPlayer.removeListener(playerListener) }
+    }
+    invalidatePlaybackOperations()
+    browseTreeLoadGeneration++
+    searchGeneration++
+    browseTreeTimeout?.let(mainHandler::removeCallbacks)
+    browseTreeTimeout = null
+    mainHandler.removeCallbacks(shakeSensorUnregisterRunnable)
+    mainHandler.removeCallbacksAndMessages(null)
+    browseFuture?.cancel(true)
+    browseFuture = null
+    browseExecutor.shutdownNow()
+    accountMaintenanceExecutor.shutdownNow()
+    // Finish already accepted resume checkpoints after service teardown; the
+    // exact connection lease prevents them from reviving a removed account.
+    playbackPersistenceExecutor.shutdown()
+    searchFuture?.cancel(true)
+    searchFuture = null
+    searchExecutor.shutdownNow()
+    mediaSessionCallback?.release()
+    mediaSessionCallback = null
+    mediaDescriptionAdapter?.release()
+    mediaDescriptionAdapter = null
+    browseTreeLoadListeners.clear()
+    browseTreeLoading = false
+    val pendingBrowserTimeouts = synchronized(browserResultTimeouts) {
+      browserResultTimeouts.values.toList().also { browserResultTimeouts.clear() }
+    }
+    pendingBrowserTimeouts.forEach(mainHandler::removeCallbacks)
+    browserResultCallerPackages.clear()
+    browserResultConnectionEpochs.clear()
+    browserResultConnectionIds.clear()
+    completedBrowseResults.clear()
+    if (this::browseResultTree.isInitialized) browseResultTree.clearMemory()
+    clearPendingColdBrowseRestores()
+    clientEventEmitter = null
+
+    // Stop manager-owned periodic work before the player/session is released.
+    // These shutdown paths deliberately do not send a final network sync or
+    // restore player volume during teardown.
+    if (this::sleepTimerManager.isInitialized) {
+      sleepTimerManager.shutdown()
+    } else {
+      unregisterSensorImmediately()
+    }
+    if (this::mediaProgressSyncer.isInitialized) {
+      mediaProgressSyncer.shutdown()
+    }
+    if (this::apiHandler.isInitialized) {
+      apiHandler.shutdown()
+    }
+
     try {
-      val connectivityManager =
-              getSystemService(ConnectivityManager::class.java) as ConnectivityManager
-      connectivityManager.unregisterNetworkCallback(networkCallback)
+      if (networkCallbackRegistered) {
+        val connectivityManager =
+                getSystemService(ConnectivityManager::class.java) as ConnectivityManager
+        connectivityManager.unregisterNetworkCallback(networkCallback)
+        networkCallbackRegistered = false
+      }
     } catch (error: Exception) {
-      Log.e(tag, "Error unregistering network listening callback $error")
+      Log.e(tag, "Error unregistering network callback (${error.javaClass.simpleName})")
     }
 
     Log.d(tag, "onDestroy")
-    isStarted = false
     isClosed = true
-    DeviceManager.widgetUpdater?.onPlayerChanged(this)
+    if (activeInstance?.get() === this) {
+      activeInstance?.clear()
+      activeInstance = null
+    }
+    if (this::currentPlayer.isInitialized) {
+      DeviceManager.widgetUpdater?.onPlayerChanged(this)
+    }
 
-    playerNotificationManager.setPlayer(null)
-    mPlayer.release()
-    mediaSession.release()
-    mediaProgressSyncer.reset()
-
+    // Android may destroy a service whose OEM-dependent initialization only
+    // partially completed. Release only components that were created.
+    if (this::playerNotificationManager.isInitialized) {
+      playerNotificationManager.setPlayer(null)
+    }
+    if (this::mPlayer.isInitialized) {
+      mPlayer.release()
+    }
+    if (this::mediaSession.isInitialized) {
+      mediaSession.release()
+    }
     super.onDestroy()
   }
 
@@ -236,10 +492,52 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   override fun onCreate() {
     Log.d(tag, "onCreate")
     super.onCreate()
+    serviceDestroyed = false
+    isClosed = false
     ctx = this
+    activeInstance = WeakReference(this)
 
     // Initialize Paper
     DbManager.initialize(ctx)
+    browseResultTree = BrowseResultTree(
+      persistenceDirectory = File(noBackupFilesDir, "aaos-browse-ranges-v2"),
+      scopeIdProvider = {
+        currentBrowseServerConfigId()?.let { configId -> "server:$configId" } ?: "offline:none"
+      }
+    )
+    // AccountManager, Keystore, SharedPreferences.commit, and Paper can all
+    // perform disk/binder I/O. Keep Automotive service creation responsive;
+    // network paths independently reject insecure profiles while maintenance
+    // runs on this serialized background lane.
+    accountMaintenanceExecutor.execute {
+      try {
+        ShelfDriveConnectionDataCleaner.retryPendingPurges(applicationContext)
+        val removedInsecureConfigIds = synchronized(DeviceManager.connectionPersistenceMonitor) {
+          val ids = DeviceManager.removeInsecureServerConnections()
+          if (ids.isNotEmpty()) {
+            val secureStorage = SecureStorage(applicationContext)
+            ids.forEach(secureStorage::removeRefreshToken)
+          }
+          ids
+        }
+        if (removedInsecureConfigIds.isNotEmpty()) {
+          Log.w(tag, "Removed ${removedInsecureConfigIds.size} legacy HTTP server profile(s)")
+          requestBrowseRefresh("insecure profile removed")
+        }
+        val accountSync = ServerConnectionAccountRegistry(applicationContext)
+          .reconcile(DeviceManager.snapshotServerConnectionConfigs())
+        if (!accountSync.succeeded && !accountSync.restricted) {
+          Log.w(
+            tag,
+            "Android account reconciliation failed for ${accountSync.failures.size} account(s)"
+          )
+        }
+      } catch (error: Exception) {
+        // Maintenance is best-effort and must never become an uncaught worker
+        // exception that terminates the Automotive media process after startup.
+        Log.e(tag, "Account maintenance failed (${error.javaClass.simpleName})")
+      }
+    }
 
     // FileProvider-backed cache used by getCoverUri so cross-process readers
     // (Car Media browse) get content:// URIs they can authenticate against.
@@ -247,24 +545,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       DeviceManager.coverCache = com.audiobookshelf.app.media.CoverCache(ctx)
     }
 
-    // Initialize widget
-    DeviceManager.initializeWidgetUpdater(ctx)
-
-    // To listen for network change from metered to unmetered
-    val networkRequest =
-            NetworkRequest.Builder()
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-                    .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
-                    .build()
-    val connectivityManager =
-            getSystemService(ConnectivityManager::class.java) as ConnectivityManager
-    connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
-
-    DbManager.initialize(ctx)
-
     // Initialize API
     apiHandler = ApiHandler(ctx)
+    retryQueuedPlaybackSessions()
 
     // Initialize sleep timer
     sleepTimerManager = SleepTimerManager(this)
@@ -279,15 +562,35 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     // Initialize media manager
     mediaManager = MediaManager(apiHandler, ctx)
 
+    // Register only after MediaManager exists: Android can invoke this callback
+    // immediately for the already-active car network.
+    val networkRequest =
+            NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+                    .build()
+    try {
+      val connectivityManager =
+              getSystemService(ConnectivityManager::class.java) as ConnectivityManager
+      connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
+      networkCallbackRegistered = true
+    } catch (error: Exception) {
+      // Media browsing remains usable for downloaded content and can retry
+      // server access when the host requests the root again.
+      Log.w(tag, "Unable to register network callback (${error.javaClass.simpleName})")
+    }
+
     channelId =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-              createNotificationChannel(channelId, channelName)
+              createNotificationChannel(channelId)
             } else ""
 
+    // AAOS media apps must not expose their own playback UI. The system media
+    // host owns browsing/playback, so the session affordance may only open the
+    // parked settings/sign-in surface.
     val sessionActivityIntent =
-            Intent(this, MainActivity::class.java).apply {
-              action = Intent.ACTION_MAIN
-              addCategory(Intent.CATEGORY_LAUNCHER)
+            Intent(this, SettingsActivity::class.java).apply {
+              action = Intent.ACTION_APPLICATION_PREFERENCES
               flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
     val sessionActivityPendingIntent =
@@ -301,7 +604,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     mediaSession =
             MediaSessionCompat(this, tag).apply {
               setSessionActivity(sessionActivityPendingIntent)
-              isActive = true
+              // Activate only after the player and final command callback are
+              // installed at the end of onCreate.
+              isActive = false
             }
 
     val mediaController = MediaControllerCompat(ctx, mediaSession.sessionToken)
@@ -311,7 +616,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
     val builder = PlayerNotificationManager.Builder(ctx, notificationId, channelId)
 
-    builder.setMediaDescriptionAdapter(AbMediaDescriptionAdapter(mediaController, this))
+    val descriptionAdapter = AbMediaDescriptionAdapter(mediaController, this)
+    mediaDescriptionAdapter = descriptionAdapter
+    builder.setMediaDescriptionAdapter(descriptionAdapter)
     builder.setNotificationListener(PlayerNotificationListener(this))
 
     playerNotificationManager = builder.build()
@@ -359,36 +666,10 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                 val coverUri = currentPlaybackSession!!.getCoverUri(ctx)
 
 
-                var bitmap: Bitmap? = null
-                // Local covers get bitmap
-                // Note: In Android Auto for local cover images, setting the icon uri to a local path does not work (cover is blank)
-                // so we create and set the bitmap here instead of AbMediaDescriptionAdapter
-                if (currentPlaybackSession!!.localLibraryItem?.coverContentUrl != null) {
-                  try {
-                    bitmap =
-                      if (Build.VERSION.SDK_INT < 28) {
-                        MediaStore.Images.Media.getBitmap(ctx.contentResolver, coverUri)
-                      } else {
-                        val source: ImageDecoder.Source =
-                          ImageDecoder.createSource(ctx.contentResolver, coverUri)
-                        ImageDecoder.decodeBitmap(source)
-                      }
-                  } catch (error: Exception) {
-                    Log.e(tag, "Failed to decode local cover bitmap", error)
-                  }
-                }
-
-                // Fix for local images crashing on Android 11 for specific devices
-                // https://stackoverflow.com/questions/64186578/android-11-mediastyle-notification-crash/64232958#64232958
-                try {
-                  ctx.grantUriPermission(
-                          "com.android.systemui",
-                          coverUri,
-                          Intent.FLAG_GRANT_READ_URI_PERMISSION
-                  )
-                } catch (error: Exception) {
-                  Log.e(tag, "Grant uri permission error $error")
-                }
+                // Queue metadata crosses the same process boundary as playing
+                // metadata. Grant before returning the description so an OEM
+                // image loader cannot race the FileProvider permission.
+                grantPlaybackArtworkAccess(coverUri)
 
                 val extra = Bundle()
                 extra.putString(
@@ -401,8 +682,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                                 .setExtras(extra)
                                 .setTitle(currentPlaybackSession!!.displayTitle)
 
-                bitmap?.let { mediaDescriptionBuilder.setIconBitmap(it) }
-                  ?: mediaDescriptionBuilder.setIconUri(coverUri)
+                mediaDescriptionBuilder.setIconUri(coverUri)
 
                 return mediaDescriptionBuilder.build()
               }
@@ -410,12 +690,132 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
     setMediaSessionConnectorPlaybackActions()
     mediaSessionConnector.setQueueNavigator(queueNavigator)
-    mediaSessionConnector.setPlaybackPreparer(MediaSessionPlaybackPreparer(this))
-
-    mediaSession.setCallback(MediaSessionCallback(this))
-
+    // Expose commands only after the player is fully initialized so an eager
+    // car host cannot hit a lateinit player during service startup.
     initializeMPlayer()
     currentPlayer = mPlayer
+    val sessionCallback = MediaSessionCallback(this)
+    mediaSessionCallback = sessionCallback
+    // The connector uses this adapter to advertise the standard voice/browse
+    // actions in PlaybackState; every implementation still delegates to the
+    // same lifecycle-safe callback installed below.
+    mediaSessionConnector.setPlaybackPreparer(MediaSessionPlaybackPreparer(sessionCallback))
+    mediaSession.setCallback(sessionCallback)
+    mediaSession.isActive = true
+  }
+
+  private data class SavedSessionRetryBatch(
+    val sessions: List<PlaybackSession>,
+    val ownerConfig: ServerConnectionConfig,
+    val ownerLease: ConnectionLease
+  )
+
+  /**
+   * Failed terminal checkpoints survive process death. Retry a bounded,
+   * owner-qualified batch whenever the release media service starts, removing
+   * only rows the server explicitly accepted.
+   */
+  private fun retryQueuedPlaybackSessions() {
+    try {
+      accountMaintenanceExecutor.execute {
+        val batches = try {
+          synchronized(DeviceManager.connectionPersistenceMonitor) {
+            val savedConnectionIds = DeviceManager.snapshotServerConnectionConfigs()
+              .asSequence()
+              .map { it.id }
+              .filter { it.isNotBlank() }
+              .toSet()
+            DeviceManager.dbManager
+              .getPlaybackSessionsForConnections(
+                savedConnectionIds,
+                MAX_SAVED_SESSION_RETRIES_PER_START
+              )
+              .groupBy { it.serverConnectionConfigId }
+              .flatMap { (ownerId, sessions) ->
+                if (ownerId.isNullOrBlank()) return@flatMap emptyList()
+                val ownerConfig = DeviceManager.getServerConnectionConfig(ownerId)
+                  ?: return@flatMap emptyList()
+                val ownerLease = DeviceManager.captureConnectionLease(ownerConfig)
+                  ?: return@flatMap emptyList()
+                partitionSavedSessionRetriesByUniqueId(sessions).map { uniqueSessions ->
+                  SavedSessionRetryBatch(uniqueSessions, ownerConfig, ownerLease)
+                }
+              }
+          }
+        } catch (error: RuntimeException) {
+          Log.e(tag, "Unable to load queued playback retries (${error.javaClass.simpleName})")
+          emptyList()
+        }
+        if (!serviceDestroyed && batches.isNotEmpty()) {
+          retryNextSavedSessionBatch(java.util.ArrayDeque(batches))
+        }
+      }
+    } catch (_: java.util.concurrent.RejectedExecutionException) {
+      Log.i(tag, "Queued playback retry ignored after service teardown")
+    }
+  }
+
+  private fun partitionSavedSessionRetriesByUniqueId(
+    sessions: List<PlaybackSession>
+  ): List<List<PlaybackSession>> {
+    val remaining = sessions.toMutableList()
+    val batches = mutableListOf<List<PlaybackSession>>()
+    while (remaining.isNotEmpty()) {
+      val seenIds = mutableSetOf<String>()
+      val uniqueBatch = mutableListOf<PlaybackSession>()
+      val iterator = remaining.iterator()
+      while (iterator.hasNext()) {
+        val session = iterator.next()
+        if (seenIds.add(session.id)) {
+          uniqueBatch += session
+          iterator.remove()
+        }
+      }
+      batches += uniqueBatch
+    }
+    return batches
+  }
+
+  private fun retryNextSavedSessionBatch(
+    batches: java.util.ArrayDeque<SavedSessionRetryBatch>
+  ) {
+    if (serviceDestroyed) return
+    val batch = batches.pollFirst() ?: return
+    try {
+      apiHandler.sendSyncLocalSessions(
+        batch.sessions,
+        batch.ownerConfig,
+        batch.ownerLease
+      ) { results, _ ->
+        try {
+          if (!serviceDestroyed && results != null &&
+            DeviceManager.isConnectionLeaseCurrent(batch.ownerLease)
+          ) {
+            val successfulIds = results.asSequence()
+              .filter { it.success }
+              .map { it.id }
+              .toSet()
+            synchronized(DeviceManager.connectionPersistenceMonitor) {
+              if (DeviceManager.isConnectionLeaseCurrent(batch.ownerLease)) {
+                // Every transport batch has unique IDs, so one response can
+                // match at most one exact owner-scoped checkpoint. The Paper
+                // token prevents an old success deleting a newer in-flight row.
+                batch.sessions.filter { it.id in successfulIds }.forEach {
+                  DeviceManager.dbManager.removePlaybackSessionIfUnchanged(it)
+                }
+              }
+            }
+          }
+        } catch (error: RuntimeException) {
+          Log.e(tag, "Unable to apply queued playback retry (${error.javaClass.simpleName})")
+        } finally {
+          retryNextSavedSessionBatch(batches)
+        }
+      }
+    } catch (error: RuntimeException) {
+      Log.e(tag, "Unable to start queued playback retry (${error.javaClass.simpleName})")
+      retryNextSavedSessionBatch(batches)
+    }
   }
 
   private fun initializeMPlayer() {
@@ -436,7 +836,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                     .setSeekForwardIncrementMs(deviceSettings.jumpForwardTimeMs)
                     .build()
     mPlayer.setHandleAudioBecomingNoisy(true)
-    mPlayer.addListener(PlayerListener(this))
+    playerListener = PlayerListener(this)
+    mPlayer.addListener(playerListener)
     val audioAttributes: AudioAttributes =
             AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -458,19 +859,79 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           playWhenReady: Boolean,
           playbackRate: Float?
   ) {
-    if (!isStarted) {
-      Log.i(tag, "preparePlayer: foreground service not started - Starting service --")
-      Intent(ctx, PlayerNotificationService::class.java).also { intent ->
-        ContextCompat.startForegroundService(ctx, intent)
+    // A successfully accepted prepare supersedes every recovery/auto-next
+    // operation started for the prior session.
+    invalidatePlaybackOperations()
+    // Defense in depth for every asynchronous producer of a playback session
+    // (voice/browse selection, transcode fallback, next episode, and resume).
+    // A remote stream is never allowed to outlive its configured account.
+    if (publishSignInRequiredForPlaybackIfNeeded(playbackSession)) return
+    val ownerConfig = if (playbackSession.isLocal) {
+      DeviceManager.getServerConnectionConfig(playbackSession.serverConnectionConfigId)?.also {
+        playbackSession.connectionLease = DeviceManager.captureConnectionLease(it)
       }
+    } else {
+      val existingLease = playbackSession.connectionLease
+      val config = if (existingLease == null) {
+        DeviceManager.getServerConnectionConfig(playbackSession.serverConnectionConfigId)
+      } else {
+        DeviceManager.getServerConnectionConfig(existingLease)
+      }
+      val lease = existingLease ?: DeviceManager.captureConnectionLease(config)
+      if (config == null || lease == null ||
+        config.id != playbackSession.serverConnectionConfigId ||
+        !DeviceManager.trySelectServerConnectionConfig(config, lease)
+      ) {
+        setSignInRequiredPlaybackState()
+        return
+      }
+      playbackSession.connectionLease = lease
+      config
     }
-
+    // Validate HLS credentials before publishing metadata or committing this
+    // session. Returning from the media-source branch after commit would leave
+    // a half-prepared session visible to the car host.
+    val hlsOwnerToken = if (playbackSession.isHLS) {
+      ownerConfig?.token?.takeIf { it.isNotBlank() }
+    } else {
+      null
+    }
+    if (playbackSession.isHLS && hlsOwnerToken == null) {
+      setSignInRequiredPlaybackState()
+      return
+    }
+    val hlsOwnerOrigin: HttpUrl? = if (playbackSession.isHLS) {
+      ownerConfig?.address?.toHttpUrlOrNull()
+    } else {
+      null
+    }
+    if (playbackSession.isHLS && hlsOwnerOrigin == null) {
+      closePlaybackWithError(getString(R.string.car_media_unavailable), playbackSession)
+      return
+    }
     // TODO: When an item isFinished the currentTime should be reset to 0
     //        will reset the time if currentTime is within 5s of duration (for android auto)
     Log.d(
             tag,
             "Prepare Player Session Current Time=${playbackSession.currentTime}, Duration=${playbackSession.duration}"
     )
+    val mediaItems = try {
+      playbackSession.getMediaItems(ctx, ownerConfig)
+    } catch (error: RuntimeException) {
+      Log.e(tag, "Invalid playback session media (${error.javaClass.simpleName})")
+      emptyList()
+    }
+    // Reject malformed/empty sessions before publishing metadata, persisting
+    // them, updating the widget, or indexing audioTracks. A bad server payload
+    // should become an actionable car-host error, never a process crash.
+    if (mediaItems.isEmpty() || mediaItems.size != playbackSession.audioTracks.size) {
+      Log.e(tag, "Invalid playback session: missing or malformed audio tracks")
+      closePlaybackWithError(getString(R.string.car_media_unavailable), playbackSession)
+      return
+    }
+    var committedNewSession = false
+    try {
+    clearFatalPlaybackErrorState()
     if (playbackSession.duration - playbackSession.currentTime < 5) {
       Log.d(tag, "Prepare Player Session is finished, so restart it")
       playbackSession.currentTime = 0.0
@@ -479,41 +940,62 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     isClosed = false
 
     val metadata = playbackSession.getMediaMetadataCompat(ctx)
+    grantPlaybackArtworkAccess(metadata)
     mediaSession.setMetadata(metadata)
     ensurePlaybackCoverCachedThenRefreshMetadata(playbackSession)
-    val mediaItems = playbackSession.getMediaItems(ctx)
-    val playbackRateToUse = playbackRate ?: initialPlaybackRate ?: 1f
-    initialPlaybackRate = playbackRate
+    val playbackRateToUse = (playbackRate ?: initialPlaybackRate ?: 1f)
+      .takeIf { it.isFinite() && it > 0f && it <= 5f } ?: 1f
+    initialPlaybackRate = playbackRateToUse
 
     // Set actions on Android Auto like jump forward/backward
     setMediaSessionConnectorCustomActions(playbackSession)
 
     playbackSession.mediaPlayer = getMediaPlayer()
 
-    currentPlaybackSession = playbackSession
+    val playbackLease = playbackSession.connectionLease
+    val committed = synchronized(DeviceManager.connectionStateMonitor) {
+      if (!playbackSession.isLocal && (
+          playbackLease == null || !DeviceManager.isConnectionLeaseCurrent(playbackLease)
+        )) {
+        false
+      } else {
+        currentPlaybackSession = playbackSession
+        true
+      }
+    }
+    if (!committed) {
+      setSignInRequiredPlaybackState()
+      return
+    }
+    committedNewSession = true
+    if (mediaProgressSyncer.isTrackingDifferentSession(playbackSession)) {
+      // Do not let a paused/listening snapshot from item A sample player B's
+      // position while Exo transitions to the newly committed session.
+      mediaProgressSyncer.reset()
+    }
+    // Listener callbacks already queued for session A must never pause, sync,
+    // recover, or close newly committed session B. Bind a fresh listener to
+    // this exact session before replacing Exo's media source.
+    mPlayer.removeListener(playerListener)
+    val listenerToken = PlaybackListenerToken(
+      playbackListenerGeneration.incrementAndGet(),
+      playbackSession
+    )
+    playerListener = PlayerListener(this, listenerToken)
+    mPlayer.addListener(playerListener)
 
-    DeviceManager.setLastPlaybackSession(
-            playbackSession
-    ) // Save playback session to use when app is closed
-
-    AbsLogger.info("PlayerNotificationService", "preparePlayer: Started playback session for item ${currentPlaybackSession?.mediaItemId}. MediaPlayer ${currentPlaybackSession?.mediaPlayer}")
+    AbsLogger.info("PlayerNotificationService", "preparePlayer: Started playback session")
     // Notify client
     clientEventEmitter?.onPlaybackSession(playbackSession)
 
     // Update widget
     DeviceManager.widgetUpdater?.onPlayerChanged(this)
 
-    if (mediaItems.isEmpty()) {
-      Log.e(tag, "Invalid playback session no media items to play")
-      currentPlaybackSession = null
-      return
-    }
-
     if (mPlayer == currentPlayer) {
       val mediaSource: MediaSource
 
       if (playbackSession.isLocal) {
-        AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing local item ${currentPlaybackSession?.mediaItemId}.")
+        AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing local media")
         val dataSourceFactory = DefaultDataSource.Factory(ctx)
 
         val extractorsFactory = DefaultExtractorsFactory()
@@ -529,7 +1011,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                 ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
                         .createMediaSource(mediaItems[0])
       } else if (!playbackSession.isHLS) {
-        AbsLogger.info("PlayerNotificationService", "preparePlayer: Direct playing item ${currentPlaybackSession?.mediaItemId}.")
+        AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing direct stream")
         val dataSourceFactory = DefaultHttpDataSource.Factory()
 
         val extractorsFactory = DefaultExtractorsFactory()
@@ -546,12 +1028,17 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                 ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
                         .createMediaSource(mediaItems[0])
       } else {
-        AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing HLS stream of item ${currentPlaybackSession?.mediaItemId}.")
-        val dataSourceFactory = DefaultHttpDataSource.Factory()
+        AbsLogger.info("PlayerNotificationService", "preparePlayer: Playing HLS stream")
+        val sessionHttpClient = playbackHttpClient.newBuilder()
+          .addInterceptor(
+            OriginBoundBearerInterceptor(
+              checkNotNull(hlsOwnerOrigin),
+              checkNotNull(hlsOwnerToken)
+            )
+          )
+          .build()
+        val dataSourceFactory = OkHttpDataSource.Factory(sessionHttpClient)
         dataSourceFactory.setUserAgent(channelId)
-        dataSourceFactory.setDefaultRequestProperties(
-                hashMapOf("Authorization" to "Bearer ${DeviceManager.token}")
-        )
         mediaSource = HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItems[0])
       }
       mPlayer.setMediaSource(mediaSource)
@@ -579,19 +1066,87 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       currentPlayer.playWhenReady = playWhenReady
       currentPlayer.setPlaybackSpeed(playbackRateToUse)
 
-      currentPlayer.prepare()
+      val prepared = synchronized(DeviceManager.connectionStateMonitor) {
+        if (!playbackSession.isLocal && (
+            playbackLease == null || !DeviceManager.isConnectionLeaseCurrent(playbackLease)
+          )) {
+          false
+        } else {
+          currentPlayer.prepare()
+          true
+        }
+      }
+      if (!prepared) {
+        currentPlaybackSession = null
+        setSignInRequiredPlaybackState()
+      } else {
+        persistPlaybackCheckpointAsync(playbackSession, playbackLease)
+      }
+    }
+    } catch (error: Exception) {
+      Log.e(tag, "Unable to prepare playback (${error.javaClass.simpleName})")
+      if (committedNewSession && currentPlaybackSession === playbackSession) {
+        closePlaybackWithError(getString(R.string.car_media_unavailable))
+      } else {
+        setMediaUnavailablePlaybackState()
+      }
     }
   }
 
+  private fun persistPlaybackCheckpointAsync(
+    playbackSession: PlaybackSession,
+    connectionLease: ConnectionLease?
+  ) {
+    val checkpoint = playbackSession.clone()
+    val checkpointRevision = DeviceManager.reservePlaybackCheckpointRevision()
+    try {
+      playbackPersistenceExecutor.execute {
+        try {
+          if (!DeviceManager.setLastPlaybackSession(
+              checkpoint,
+              connectionLease,
+              checkpointRevision
+            )) {
+            Log.i(tag, "Playback checkpoint was not current enough to persist")
+          }
+        } catch (error: Exception) {
+          // A checkpoint is resumability metadata, never a reason to terminate
+          // active Automotive playback.
+          Log.e(tag, "Playback checkpoint failed (${error.javaClass.simpleName})")
+        }
+      }
+    } catch (_: java.util.concurrent.RejectedExecutionException) {
+      Log.i(tag, "Playback checkpoint ignored after service teardown")
+    }
+  }
+
+  /** Prepare an already-loaded item only while its account remains valid. */
+  internal fun prepareCurrentPlayer() {
+    if (publishSignInRequiredForPlaybackIfNeeded(currentPlaybackSession)) return
+    val session = currentPlaybackSession ?: return
+    val prepared = synchronized(DeviceManager.connectionStateMonitor) {
+      if (!session.isLocal && session.connectionLease?.let {
+          DeviceManager.isConnectionLeaseCurrent(it)
+        } != true
+      ) {
+        false
+      } else {
+        currentPlayer.prepare()
+        true
+      }
+    }
+    if (!prepared) setSignInRequiredPlaybackState()
+  }
+
   private fun setMediaSessionConnectorCustomActions(playbackSession: PlaybackSession) {
-    val mediaItems = playbackSession.getMediaItems(ctx)
+    val mediaItemCount = playbackSession.audioTracks.size
     val customActionProviders =
             mutableListOf(
                     JumpBackwardCustomActionProvider(),
                     JumpForwardCustomActionProvider(),
                     ChangePlaybackSpeedCustomActionProvider() // Will be pushed to far left
             )
-    if (mediaItems.size > 1) {
+    if (mediaItemCount > 1) {
       customActionProviders.addAll(
               listOf(
                       SkipBackwardCustomActionProvider(),
@@ -603,95 +1158,302 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   fun setMediaSessionConnectorPlaybackActions() {
+    mediaSessionConnector.setEnabledPlaybackActions(configuredPlaybackActions())
+  }
+
+  private fun configuredPlaybackActions(): Long {
     var playbackActions =
             PlaybackStateCompat.ACTION_PLAY_PAUSE or
                     PlaybackStateCompat.ACTION_PLAY or
                     PlaybackStateCompat.ACTION_PAUSE or
+                    PlaybackStateCompat.ACTION_PREPARE or
+                    PlaybackStateCompat.ACTION_PREPARE_FROM_MEDIA_ID or
+                    PlaybackStateCompat.ACTION_PREPARE_FROM_SEARCH or
+                    PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID or
+                    PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH or
                     PlaybackStateCompat.ACTION_FAST_FORWARD or
                     PlaybackStateCompat.ACTION_REWIND or
-                    PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                    PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or
                     PlaybackStateCompat.ACTION_STOP
 
     if (deviceSettings.allowSeekingOnMediaControls) {
       playbackActions = playbackActions or PlaybackStateCompat.ACTION_SEEK_TO
     }
-    mediaSessionConnector.setEnabledPlaybackActions(playbackActions)
+    return playbackActions
   }
 
-  fun handlePlayerPlaybackError(errorMessage: String) {
+  internal fun isPlaybackListenerCurrent(token: PlaybackListenerToken?): Boolean =
+    !serviceDestroyed && token != null &&
+      playbackListenerGeneration.get() == token.generation &&
+      currentPlaybackSession === token.sourceSession
+
+  internal fun handlePlayerPlaybackError(
+    errorMessage: String,
+    sourceListener: PlaybackListenerToken? = null
+  ) {
     // On error and was attempting to direct play - fallback to transcode
     currentPlaybackSession?.let { playbackSession ->
+      if (sourceListener != null && !isPlaybackListenerCurrent(sourceListener)) {
+        Log.d(tag, "Ignoring playback error from a replaced session")
+        return
+      }
       if (playbackSession.isDirectPlay) {
+        val operation = beginPlaybackOperation(playbackSession)
+        val ownerConfig = playbackSession.connectionLease?.let {
+          DeviceManager.getServerConnectionConfig(it)
+        }
+        if (ownerConfig == null) {
+          closePlaybackWithError(getString(R.string.car_sign_in_required))
+          return
+        }
         val playItemRequestPayload = getPlayItemRequestPayload(true)
         Log.d(tag, "Fallback to transcode $playItemRequestPayload.mediaPlayer")
 
         val libraryItemId = playbackSession.libraryItemId ?: "" // Must be true since direct play
         val episodeId = playbackSession.episodeId
         mediaProgressSyncer.stop(false) {
-          apiHandler.playLibraryItem(libraryItemId, episodeId, playItemRequestPayload) {
+          if (!isPlaybackOperationCurrent(operation)) return@stop
+          apiHandler.playLibraryItem(
+            libraryItemId,
+            episodeId,
+            playItemRequestPayload,
+            ownerConfig
+          ) {
+            if (!isPlaybackOperationCurrent(operation)) return@playLibraryItem
             if (it == null) { // Play request failed
-              clientEventEmitter?.onPlaybackFailed(errorMessage)
-              closePlayback(true)
+              postToMainIfAlive {
+                if (isPlaybackOperationCurrent(operation)) {
+                  closePlaybackWithError(errorMessage)
+                }
+              }
             } else {
-              Handler(Looper.getMainLooper()).post { preparePlayer(it, true, null) }
-            }
-          }
-        }
-      } else {
-        clientEventEmitter?.onPlaybackFailed(errorMessage)
-        closePlayback(true)
-      }
-    }
-  }
-
-  fun handlePlaybackEnded() {
-    Log.d(tag, "handlePlaybackEnded")
-    if (isAndroidAuto && currentPlaybackSession?.isPodcastEpisode == true) {
-      Log.d(tag, "Podcast playback ended on android auto")
-      val libraryItem = currentPlaybackSession?.libraryItem ?: return
-
-      // Need to sync with server to set as finished
-      mediaProgressSyncer.finished {
-        // Need to reload media progress
-        mediaManager.loadServerUserMediaProgress {
-          val podcast = libraryItem.media as Podcast
-          val nextEpisode = podcast.getNextUnfinishedEpisode(libraryItem.id, mediaManager)
-          Log.d(tag, "handlePlaybackEnded nextEpisode=$nextEpisode")
-          nextEpisode?.let { podcastEpisode ->
-            mediaManager.play(libraryItem, podcastEpisode, getPlayItemRequestPayload(false)) {
-              if (it == null) {
-                Log.e(tag, "Failed to play library item")
-              } else {
-                val playbackRate = mediaManager.getSavedPlaybackRate()
-                Handler(Looper.getMainLooper()).post { preparePlayer(it, true, playbackRate) }
+              postToMainIfAlive {
+                if (isPlaybackOperationCurrent(operation)) {
+                  preparePlayer(it, true, null)
+                }
               }
             }
           }
         }
+      } else {
+        closePlaybackWithError(errorMessage)
       }
+    } ?: closePlaybackWithError(errorMessage)
+  }
+
+  private fun closePlaybackWithError(
+    errorMessage: String,
+    failedSession: PlaybackSession? = currentPlaybackSession
+  ) {
+    if (serviceDestroyed) return
+    clientEventEmitter?.onPlaybackFailed(errorMessage)
+    closePlayback(true)
+    setPlaybackFailureState(failedSession)
+  }
+
+  private fun setPlaybackFailureState(failedSession: PlaybackSession?) {
+    if (publishSignInRequiredForPlaybackIfNeeded(failedSession)) return
+    setFatalCarPlaybackError(
+      messageRes = R.string.voice_search_playback_failed,
+      actionLabelRes = R.string.car_open_settings_action,
+      errorCode = PlaybackStateCompat.ERROR_CODE_APP_ERROR
+    )
+  }
+
+  fun handlePlaybackEnded() {
+    Log.d(tag, "handlePlaybackEnded")
+    if (!isAndroidAuto) return
+    val playbackSession = currentPlaybackSession ?: return
+    val operation = beginPlaybackEndOperation(playbackSession) ?: run {
+      Log.d(tag, "Ignoring duplicate playback completion")
+      return
+    }
+
+    if (usesPodcastAutoNextForEndedPlayback(playbackSession)) {
+      Log.d(tag, "Podcast playback ended on android auto")
+      val libraryItem = playbackSession.libraryItem ?: return
+      val ownerLease = playbackSession.connectionLease
+      val ownerConfig = ownerLease?.let(DeviceManager::getServerConnectionConfig)
+      val podcast = libraryItem.media as? Podcast
+      if (ownerLease == null || ownerConfig == null || podcast == null) {
+        if (podcast == null) {
+          Log.e(tag, "Ignoring malformed podcast playback completion")
+        }
+        closePlaybackWithError(getString(R.string.car_media_unavailable))
+        return
+      }
+
+      // Need to sync with server to set as finished
+      mediaProgressSyncer.finished { finalSync ->
+        if (!isPlaybackOperationCurrent(operation)) return@finished
+        // Never reload stale server progress and select the just-ended episode
+        // when its terminal checkpoint was deferred or rejected.
+        if (finalSync?.serverSyncAttempted != true ||
+          finalSync.serverSyncSuccess != true
+        ) {
+          postToMainIfAlive {
+            if (isPlaybackOperationCurrent(operation)) {
+              closePlayback(false)
+              setMediaUnavailablePlaybackState()
+            }
+          }
+          return@finished
+        }
+        // Need to reload media progress
+        if (!DeviceManager.trySelectServerConnectionConfig(ownerConfig, ownerLease)) {
+          postToMainIfAlive {
+            if (isPlaybackOperationCurrent(operation)) {
+              closePlayback(false)
+              setSignInRequiredPlaybackState()
+            }
+          }
+          return@finished
+        }
+        mediaManager.loadServerUserMediaProgress(ownerConfig, ownerLease) { loaded ->
+          if (!isPlaybackOperationCurrent(operation)) {
+            return@loadServerUserMediaProgress
+          }
+          if (!DeviceManager.isConnectionLeaseCurrent(ownerLease)) {
+            postToMainIfAlive {
+              if (isPlaybackOperationCurrent(operation)) {
+                closePlayback(false)
+                setSignInRequiredPlaybackState()
+              }
+            }
+            return@loadServerUserMediaProgress
+          }
+          if (!loaded) {
+            postToMainIfAlive {
+              if (isPlaybackOperationCurrent(operation)) {
+                closePlayback(false)
+                setMediaUnavailablePlaybackState()
+              }
+            }
+            return@loadServerUserMediaProgress
+          }
+          val nextEpisode = podcast.getNextUnfinishedEpisode(
+            libraryItem.id,
+            mediaManager,
+            playbackSession.episodeId
+          )
+          Log.d(tag, "handlePlaybackEnded nextEpisode=$nextEpisode")
+          nextEpisode?.let { podcastEpisode ->
+            mediaManager.play(
+              libraryItem,
+              podcastEpisode,
+              getPlayItemRequestPayload(false),
+              ownerConfig,
+              ownerLease
+            ) {
+              if (!isPlaybackOperationCurrent(operation)) return@play
+              if (it == null) {
+                Log.e(tag, "Failed to play library item")
+                postToMainIfAlive {
+                  if (isPlaybackOperationCurrent(operation)) {
+                    closePlayback(false)
+                    setMediaUnavailablePlaybackState()
+                  }
+                }
+              } else {
+                val playbackRate = mediaManager.getSavedPlaybackRate()
+                postToMainIfAlive {
+                  if (isPlaybackOperationCurrent(operation)) {
+                    preparePlayer(it, true, playbackRate)
+                  }
+                }
+              }
+            }
+          } ?: postToMainIfAlive {
+            if (isPlaybackOperationCurrent(operation)) closePlayback(false)
+          }
+        }
+      }
+      return
+    }
+
+    // Books and downloaded podcasts do not auto-advance. Start the detached
+    // terminal checkpoint before removing the ended Exo timeline so service
+    // teardown cannot cancel it. With no retained media item, a later Play
+    // request goes through normal resume preparation, whose near-end rule
+    // explicitly restarts the item from zero.
+    try {
+      mediaProgressSyncer.finished {
+        postToMainIfAlive {
+          if (isPlaybackOperationSessionCurrent(operation)) closePlayback(false)
+        }
+      }
+    } catch (error: RuntimeException) {
+      Log.e(tag, "Unable to finish completed playback (${error.javaClass.simpleName})")
+      postToMainIfAlive {
+        if (isPlaybackOperationSessionCurrent(operation)) closePlayback(false)
+      }
+    } finally {
+      clearEndedPlayerTimeline(playbackSession)
     }
   }
 
+  private fun clearEndedPlayerTimeline(playbackSession: PlaybackSession) {
+    if (currentPlaybackSession !== playbackSession || !this::currentPlayer.isInitialized) return
+    try {
+      currentPlayer.stop()
+      currentPlayer.clearMediaItems()
+    } catch (error: RuntimeException) {
+      Log.e(tag, "Unable to clear completed playback (${error.javaClass.simpleName})")
+    }
+  }
+
+  internal fun usesPodcastAutoNextForEndedPlayback(playbackSession: PlaybackSession): Boolean =
+    !playbackSession.isLocal &&
+      playbackSession.isPodcastEpisode &&
+      playbackSession.libraryItem?.media is Podcast
+
   fun startNewPlaybackSession() {
     currentPlaybackSession?.let { playbackSession ->
+      val operation = beginPlaybackOperation(playbackSession)
+      val ownerLease = playbackSession.connectionLease
+      val ownerConfig = ownerLease?.let(DeviceManager::getServerConnectionConfig)
+      if (ownerLease == null || ownerConfig == null ||
+        !DeviceManager.trySelectServerConnectionConfig(ownerConfig, ownerLease)
+      ) {
+        setSignInRequiredPlaybackState()
+        return
+      }
       Log.i(tag, "Starting new playback session for ${playbackSession.displayTitle}")
 
       val forceTranscode = playbackSession.isHLS // If already HLS then force
       val playItemRequestPayload = getPlayItemRequestPayload(forceTranscode)
 
-      val libraryItemId = playbackSession.libraryItemId ?: "" // Must be true since direct play
+      val libraryItemId = playbackSession.libraryItemId
+      if (libraryItemId.isNullOrBlank()) {
+        closePlaybackWithError(getString(R.string.voice_search_playback_failed))
+        return
+      }
       val episodeId = playbackSession.episodeId
       mediaProgressSyncer.stop(false) {
-        apiHandler.playLibraryItem(libraryItemId, episodeId, playItemRequestPayload) {
+        if (!isPlaybackOperationCurrent(operation)) return@stop
+        apiHandler.playLibraryItem(
+          libraryItemId,
+          episodeId,
+          playItemRequestPayload,
+          ownerConfig
+        ) {
+          if (!isPlaybackOperationCurrent(operation)) return@playLibraryItem
           if (it == null) {
             Log.e(tag, "Failed to start new playback session")
+            postToMainIfAlive {
+              if (isPlaybackOperationCurrent(operation)) {
+                closePlaybackWithError(getString(R.string.voice_search_playback_failed))
+              }
+            }
           } else {
             Log.d(
                     tag,
                     "New playback session response from server with session id ${it.id} for \"${it.displayTitle}\""
             )
-            Handler(Looper.getMainLooper()).post { preparePlayer(it, true, null) }
+            postToMainIfAlive {
+              if (isPlaybackOperationCurrent(operation)) {
+                preparePlayer(it, true, null)
+              }
+            }
           }
         }
       }
@@ -803,7 +1565,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               currentPlaybackSession = updatedPlaybackSession
             }
 
-            Handler(Looper.getMainLooper()).post {
+            postToMainIfAlive {
               seekPlayer(playbackSession.currentTimeMs)
               // Should already be playing
               currentPlayer.volume = 1F // Volume on sleep timer might have decreased this
@@ -811,7 +1573,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               clientEventEmitter?.onPlayingUpdate(true)
             }
           } else {
-            Handler(Looper.getMainLooper()).post {
+            postToMainIfAlive {
               if (seekBackTime > 0L) {
                 seekBackward(seekBackTime)
               }
@@ -831,20 +1593,27 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                 tag,
                 "checkCurrentSessionProgress: Checking if playback session ${playbackSession.id} for server stream is still available"
         )
-        apiHandler.getPlaybackSession(playbackSession.id) {
+        val ownerConfig = playbackSession.connectionLease?.let {
+          DeviceManager.getServerConnectionConfig(it)
+        }
+        if (ownerConfig == null) {
+          postToMainIfAlive { setSignInRequiredPlaybackState() }
+          return true
+        }
+        apiHandler.getPlaybackSession(playbackSession.id, ownerConfig) {
           if (it == null) {
             Log.d(
                     tag,
                     "checkCurrentSessionProgress: Playback session does not exist on server - start new playback session"
             )
 
-            Handler(Looper.getMainLooper()).post {
+            postToMainIfAlive {
               currentPlayer.pause()
               startNewPlaybackSession()
             }
           } else {
             Log.d(tag, "checkCurrentSessionProgress: Playback session still available on server")
-            Handler(Looper.getMainLooper()).post {
+            postToMainIfAlive {
               if (seekBackTime > 0L) {
                 seekBackward(seekBackTime)
               }
@@ -864,6 +1633,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   fun play() {
+    if (publishSignInRequiredForPlaybackIfNeeded(currentPlaybackSession)) return
     if (currentPlayer.isPlaying) {
       Log.d(tag, "Already playing")
       return
@@ -887,14 +1657,15 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   }
 
   fun seekPlayer(time: Long) {
+    val duration = getDuration().coerceAtLeast(0L)
     var timeToSeek = time
     Log.d(tag, "seekPlayer mediaCount = ${currentPlayer.mediaItemCount} | $timeToSeek")
     if (timeToSeek < 0) {
       Log.w(tag, "seekPlayer invalid time $timeToSeek - setting to 0")
       timeToSeek = 0L
-    } else if (timeToSeek > getDuration()) {
+    } else if (timeToSeek > duration) {
       Log.w(tag, "seekPlayer invalid time $timeToSeek - setting to MAX - 2000")
-      timeToSeek = getDuration() - 2000L
+      timeToSeek = (duration - 2000L).coerceAtLeast(0L)
     }
 
     if (currentPlayer.mediaItemCount > 1) {
@@ -942,11 +1713,17 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   fun closePlayback(calledOnError: Boolean? = false) {
     Log.d(tag, "closePlayback")
-    val config = DeviceManager.serverConnectionConfig
+    invalidatePlaybackOperations()
+    val closeGeneration = playbackOperationGeneration.get()
+    mediaSessionCallback?.invalidatePendingPreparation()
+    val closingSession = currentPlaybackSession ?: mediaProgressSyncer.currentPlaybackSession
+    val config = closingSession?.connectionLease?.let(DeviceManager::getServerConnectionConfig)
 
-    val isLocal = mediaProgressSyncer.currentIsLocal
-    val currentSessionId = mediaProgressSyncer.currentSessionId
-    if (mediaProgressSyncer.listeningTimerRunning) {
+    val isLocal = closingSession?.isLocal ?: mediaProgressSyncer.currentIsLocal
+    val currentSessionId = closingSession?.id ?: mediaProgressSyncer.currentSessionId
+    val terminalSyncPending = mediaProgressSyncer.listeningTimerRunning ||
+      mediaProgressSyncer.isSuspendedForBuffering
+    if (terminalSyncPending) {
       Log.i(tag, "About to close playback so stopping media progress syncer first")
 
       mediaProgressSyncer.stop(
@@ -954,15 +1731,20 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       ) { // If closing on error then do not sync progress (causes exception)
         Log.d(tag, "Media Progress syncer stopped")
         // If not local session then close on server
-        if (!isLocal && currentSessionId != "") {
+        if (!isLocal && currentSessionId != "" && config != null) {
           apiHandler.closePlaybackSession(currentSessionId, config) {
             Log.d(tag, "Closed playback session $currentSessionId")
           }
         }
+        if (playbackOperationGeneration.get() == closeGeneration &&
+          currentPlaybackSession == null
+        ) {
+          stopSelf()
+        }
       }
     } else {
       // If not local session then close on server
-      if (!isLocal && currentSessionId != "") {
+      if (!isLocal && currentSessionId != "" && config != null) {
         apiHandler.closePlaybackSession(currentSessionId, config) {
           Log.d(tag, "Closed playback session $currentSessionId")
         }
@@ -973,18 +1755,38 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       currentPlayer.stop()
       currentPlayer.clearMediaItems()
     } catch (e: Exception) {
-      Log.e(tag, "Exception clearing exoplayer $e")
+      Log.e(tag, "Exception clearing ExoPlayer (${e.javaClass.simpleName})")
     }
 
     currentPlaybackSession = null
     mediaProgressSyncer.reset()
     clientEventEmitter?.onPlaybackClosed()
 
-    PlayerListener.lastPauseTime = 0
+    if (this::playerListener.isInitialized) playerListener.resetForSession()
     isClosed = true
     DeviceManager.widgetUpdater?.onPlayerClosed()
-    stopForeground(Service.STOP_FOREGROUND_REMOVE)
-    stopSelf()
+    if (!terminalSyncPending) stopSelf()
+  }
+
+  /** Implements MediaSession stop while retaining a safe resume checkpoint. */
+  fun stopPlaybackForResume() {
+    if (serviceDestroyed) return
+    val stoppedPositionMs = getCurrentTime().coerceAtLeast(0L)
+    currentPlaybackSession?.clone()?.let { checkpoint ->
+      checkpoint.currentTime = stoppedPositionMs / 1000.0
+      checkpoint.updatedAt = System.currentTimeMillis()
+      persistPlaybackCheckpointAsync(checkpoint, checkpoint.connectionLease)
+    }
+
+    closePlayback(false)
+    if (this::mediaSession.isInitialized) {
+      mediaSession.setPlaybackState(
+        PlaybackStateCompat.Builder()
+          .setActions(configuredPlaybackActions())
+          .setState(PlaybackStateCompat.STATE_STOPPED, stoppedPositionMs, 0f)
+          .build()
+      )
+    }
   }
 
   fun sendClientMetadata(playerState: PlayerState) {
@@ -996,7 +1798,6 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     return PLAYER_EXO
   }
 
-  @SuppressLint("HardwareIds")
   fun getDeviceInfo(): DeviceInfo {
     /* EXAMPLE
      manufacturer: Google
@@ -1005,7 +1806,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
      sdkVersion: 32
      appVersion: 0.9.46-beta
     */
-    val deviceId = Settings.Secure.getString(ctx.contentResolver, Settings.Secure.ANDROID_ID)
+    val deviceId = AppInstanceId.get(ctx)
     return DeviceInfo(
             deviceId,
             Build.MANUFACTURER,
@@ -1042,47 +1843,320 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   //
   // MEDIA BROWSER STUFF (ANDROID AUTO)
   //
-  private val VALID_MEDIA_BROWSERS =
-          mutableListOf(
-                  "com.audiobookshelf.app",
-                  "com.audiobookshelf.app.debug",
-                  "com.jedibrooker.shelfdrive",
-                  "com.jedibrooker.shelfdrive.debug",
-                  ANDROID_AUTO_PKG_NAME,
-                  ANDROID_AUTO_SIMULATOR_PKG_NAME,
-                  ANDROID_WEARABLE_PKG_NAME,
-                  ANDROID_GSEARCH_PKG_NAME,
-                  ANDROID_AUTOMOTIVE_PKG_NAME,
-                  ANDROID_CAR_MEDIA_PKG_NAME,
-                  ANDROID_CAR_LAUNCHER_PKG_NAME,
-                  POLESTAR_LAUNCHER_PKG_NAME
-          )
+  private val mediaBrowserCallerValidator by lazy {
+    // Lazy evaluation is essential: Service field initializers run before the
+    // ContextWrapper is attached and packageManager is then unavailable.
+    MediaBrowserCallerValidator(applicationContext)
+  }
+  private val validatedBrowserPackages = ValidatedBrowserPackageRegistry()
+  private val installedSystemArtworkConsumers by lazy {
+    KNOWN_PLAYBACK_ARTWORK_SYSTEM_PACKAGES.filter { packageName ->
+      val flags = runCatching {
+        packageManager.getApplicationInfo(packageName, 0).flags
+      }.getOrDefault(0)
+      flags and (ApplicationInfo.FLAG_SYSTEM or ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+    }
+  }
 
   private val AUTO_MEDIA_ROOT = "/"
   private val LIBRARIES_ROOT = "__LIBRARIES__"
   private val RECENTLY_ROOT = "__RECENTLY__"
   private val DOWNLOADS_ROOT = "__DOWNLOADS__"
   private val CONTINUE_ROOT = "__CONTINUE__"
+  private val SEARCH_RESULTS_ROOT = "__SEARCH_RESULTS__"
   private lateinit var browseTree: BrowseTree
-  private val browseTreeInitListeners = mutableListOf<() -> Unit>()
+  private val browserResultCallerPackages =
+    java.util.Collections.synchronizedMap(java.util.WeakHashMap<Any, String>())
+  private val completedBrowseResults =
+    java.util.Collections.synchronizedMap(java.util.WeakHashMap<Any, Boolean>())
+  private val browserResultTimeouts =
+    java.util.Collections.synchronizedMap(java.util.WeakHashMap<Any, Runnable>())
+  private val browserResultConnectionEpochs =
+    java.util.Collections.synchronizedMap(java.util.WeakHashMap<Any, Long>())
+  private val browserResultConnectionIds =
+    java.util.Collections.synchronizedMap(java.util.WeakHashMap<Any, String?>())
 
-  private fun waitForBrowseTree(cb: () -> Unit)
-  {
-    if (this::browseTree.isInitialized)
-    {
-      cb()
+  private fun rebuildBrowseTree() {
+    browseTree =
+      BrowseTree(
+        this,
+        mediaManager.serverItemsInProgress,
+        mediaManager.serverLibraries,
+        mediaManager.allLibraryPersonalizationsDone
+      )
+  }
+
+  private fun currentBrowseServerConfigId(): String? =
+    DeviceManager.serverConnectionConfig?.id
+      ?: DeviceManager.getLastServerConnectionConfig()?.id
+
+  /**
+   * Initialize the AAOS browse model once and fan the outcome out to every
+   * concurrent subscriber. A timeout and generation check guarantee detached
+   * MediaBrowser results are not left pending forever or completed by a stale
+   * request after a server switch.
+   */
+  private fun ensureBrowseTreeLoaded(
+    hasOfflineMedia: Boolean,
+    forceReload: Boolean,
+    cb: (Boolean) -> Unit
+  ) {
+    if (serviceDestroyed) return
+    if (!forceReload && lastRootLoadSucceeded && this::browseTree.isInitialized) {
+      cb(true)
+      return
     }
-    else
-    {
-      browseTreeInitListeners += cb
+
+    browseTreeLoadListeners += cb
+    val requestedConfigId = currentBrowseServerConfigId()
+    if (browseTreeLoading) {
+      if (forceReload || requestedConfigId != browseTreeLoadingConfigId) {
+        browseTreeReloadQueued = true
+        queuedBrowseHasOfflineMedia = queuedBrowseHasOfflineMedia || hasOfflineMedia
+        Log.i(tag, "Queued Android Auto reload while an older browse load is active")
+      }
+      return
+    }
+
+    browseTreeLoading = true
+    forceReloadingAndroidAuto = false
+    browseTreeLoadingConfigId = requestedConfigId
+    val generation = ++browseTreeLoadGeneration
+    val timeout = Runnable {
+      if (!serviceDestroyed && browseTreeLoading && generation == browseTreeLoadGeneration) {
+        if (browseTreeReloadQueued) {
+          restartQueuedBrowseTreeLoad()
+          return@Runnable
+        }
+        Log.e(tag, "Timed out loading Android Auto browse data")
+        browseFuture?.cancel(true)
+        browseFuture = null
+        // Invalidate callbacks from the timed-out profile before another root
+        // request starts. Otherwise a late response can silently switch the
+        // active account after the browser has already received an error.
+        mediaManager.checkResetServerItems(forceReset = true)
+        // Downloads can be added or removed during a slow server load; decide
+        // from current storage state at the completion boundary.
+        if (hasPlayableDownloads()) {
+          rebuildBrowseTree()
+          clearFatalPlaybackErrorState()
+          completeBrowseTreeLoad(generation, true)
+          // Timeout recovery exposes offline data only; no enrichment callbacks
+          // will run to drain restored-page notifications.
+          clearPendingColdBrowseRestores()
+        } else {
+          setMediaUnavailablePlaybackState()
+          completeBrowseTreeLoad(generation, false)
+        }
+      }
+    }
+    browseTreeTimeout?.let(mainHandler::removeCallbacks)
+    browseTreeTimeout = timeout
+    mainHandler.postDelayed(timeout, BROWSE_LOAD_TIMEOUT_MS)
+
+    browseFuture = browseExecutor.submit {
+      try {
+        mediaManager.loadAndroidAutoItems { connectedToServer ->
+          mainHandler.post {
+            if (serviceDestroyed || !browseTreeLoading || generation != browseTreeLoadGeneration) {
+              return@post
+            }
+            mainHandler.removeCallbacks(timeout)
+            if (browseTreeTimeout === timeout) browseTreeTimeout = null
+            if (browseTreeReloadQueued) {
+              restartQueuedBrowseTreeLoad()
+              return@post
+            }
+            try {
+              // MediaManager may intentionally select the one bounded fallback
+              // profile during this load. Accept that resolved profile instead
+              // of discarding successful work and starting the whole sequence
+              // again. Explicit user/root switches set browseTreeReloadQueued.
+              val resolvedConfigId = currentBrowseServerConfigId()
+              // Authentication can be revoked while loadAndroidAutoItems is in
+              // flight. Never publish its cached server titles or clear the
+              // actionable sign-in state after that profile has disappeared.
+              if (resolvedConfigId == null) {
+                mediaManager.checkResetServerItems(forceReset = true)
+                if (hasPlayableDownloads()) {
+                  rebuildBrowseTree()
+                  clearFatalPlaybackErrorState()
+                  completeBrowseTreeLoad(generation, true)
+                } else {
+                  setSignInRequiredPlaybackState()
+                  completeBrowseTreeLoad(generation, false)
+                }
+                return@post
+              }
+              browseTreeLoadingConfigId = resolvedConfigId
+              val hasServerMedia = mediaManager.serverLibraries.any {
+                it.stats?.numAudioFiles != 0
+              }
+              if ((!connectedToServer || !hasServerMedia) && !hasPlayableDownloads()) {
+                setMediaUnavailablePlaybackState()
+                completeBrowseTreeLoad(generation, false)
+                return@post
+              }
+
+              rebuildBrowseTree()
+              clearFatalPlaybackErrorState()
+              completeBrowseTreeLoad(generation, true)
+
+              if (mediaManager.serverLibraries.isNotEmpty()) {
+                beginBrowseEnrichment(generation, callbackCount = 2)
+                try {
+                  mediaManager.populatePersonalizedDataForAllLibraries {
+                    postToMainIfAlive personalized@ {
+                      if (generation != browseTreeLoadGeneration ||
+                        currentBrowseServerConfigId() != resolvedConfigId ||
+                        !lastRootLoadSucceeded
+                      ) {
+                        finishBrowseEnrichmentCallback(generation)
+                        return@personalized
+                      }
+                      try {
+                        rebuildBrowseTree()
+                        notifyChildrenChanged(AUTO_MEDIA_ROOT)
+                        notifyPendingColdBrowseRestores()
+                      } catch (error: Exception) {
+                        Log.w(
+                          tag,
+                          "Unable to publish personalized browse data (${error.javaClass.simpleName})"
+                        )
+                      } finally {
+                        finishBrowseEnrichmentCallback(generation)
+                      }
+                    }
+                  }
+                } catch (error: Exception) {
+                  Log.w(tag, "Unable to start personalized browse load (${error.javaClass.simpleName})")
+                  finishBrowseEnrichmentCallback(generation)
+                }
+                try {
+                  mediaManager.initializeInProgressItems {
+                    postToMainIfAlive inProgress@ {
+                      if (generation != browseTreeLoadGeneration ||
+                        currentBrowseServerConfigId() != resolvedConfigId ||
+                        !lastRootLoadSucceeded
+                      ) {
+                        finishBrowseEnrichmentCallback(generation)
+                        return@inProgress
+                      }
+                      try {
+                        rebuildBrowseTree()
+                        notifyChildrenChanged(AUTO_MEDIA_ROOT)
+                        notifyPendingColdBrowseRestores()
+                      } catch (error: Exception) {
+                        Log.w(
+                          tag,
+                          "Unable to publish in-progress browse data (${error.javaClass.simpleName})"
+                        )
+                      } finally {
+                        finishBrowseEnrichmentCallback(generation)
+                      }
+                    }
+                  }
+                } catch (error: Exception) {
+                  Log.w(tag, "Unable to start in-progress browse load (${error.javaClass.simpleName})")
+                  finishBrowseEnrichmentCallback(generation)
+                }
+              } else {
+                clearPendingColdBrowseRestores()
+              }
+            } catch (error: Exception) {
+              Log.e(tag, "Failed to initialize AAOS browse data (${error.javaClass.simpleName})")
+              setMediaUnavailablePlaybackState()
+              completeBrowseTreeLoad(generation, false)
+            }
+          }
+        }
+      } catch (error: Exception) {
+        mainHandler.post {
+          if (!serviceDestroyed && browseTreeLoading && generation == browseTreeLoadGeneration) {
+            mainHandler.removeCallbacks(timeout)
+            if (browseTreeTimeout === timeout) browseTreeTimeout = null
+            if (browseTreeReloadQueued) {
+              restartQueuedBrowseTreeLoad()
+              return@post
+            }
+            Log.e(tag, "Failed to load AAOS browse data (${error.javaClass.simpleName})")
+            setMediaUnavailablePlaybackState()
+            completeBrowseTreeLoad(generation, false)
+          }
+        }
+      }
     }
   }
 
-  private fun onBrowseTreeInitialized()
-  {
-    // Called after browseTree is assigned for the first time
-    browseTreeInitListeners.forEach { it.invoke() }
-    browseTreeInitListeners.clear()
+  private fun restartQueuedBrowseTreeLoad() {
+    if (serviceDestroyed) return
+    val hasOfflineMedia = queuedBrowseHasOfflineMedia
+    browseTreeTimeout?.let(mainHandler::removeCallbacks)
+    browseTreeTimeout = null
+    browseFuture?.cancel(true)
+    browseFuture = null
+    browseTreeLoading = false
+    browseTreeLoadingConfigId = null
+    browseTreeReloadQueued = false
+    queuedBrowseHasOfflineMedia = false
+    mediaManager.checkResetServerItems(forceReset = true)
+
+    // Existing result listeners remain queued; this no-op listener simply
+    // starts the replacement generation through the same code path.
+    ensureBrowseTreeLoaded(hasOfflineMedia, forceReload = true) {}
+  }
+
+  private fun completeBrowseTreeLoad(generation: Int, success: Boolean) {
+    if (serviceDestroyed || !browseTreeLoading || generation != browseTreeLoadGeneration) return
+
+    browseTreeTimeout?.let(mainHandler::removeCallbacks)
+    browseTreeTimeout = null
+    browseFuture = null
+    browseTreeLoading = false
+    browseTreeLoadingConfigId = null
+    browseTreeReloadQueued = false
+    queuedBrowseHasOfflineMedia = false
+    lastRootLoadSucceeded = success
+    forceReloadingAndroidAuto = !success
+    if (!success) clearPendingColdBrowseRestores()
+
+    val listeners = browseTreeLoadListeners.toList()
+    browseTreeLoadListeners.clear()
+    listeners.forEach { listener ->
+      try {
+        listener(success)
+      } catch (error: Exception) {
+        Log.e(tag, "AAOS browse listener failed (${error.javaClass.simpleName})")
+      }
+    }
+  }
+
+  private fun beginBrowseEnrichment(generation: Int, callbackCount: Int) {
+    browseEnrichmentGeneration = generation
+    browseEnrichmentCallbacksRemaining = callbackCount.coerceAtLeast(0)
+    if (browseEnrichmentCallbacksRemaining == 0) clearPendingColdBrowseRestores()
+  }
+
+  private fun finishBrowseEnrichmentCallback(generation: Int) {
+    if (generation != browseEnrichmentGeneration) return
+    browseEnrichmentCallbacksRemaining = (browseEnrichmentCallbacksRemaining - 1).coerceAtLeast(0)
+    if (browseEnrichmentCallbacksRemaining == 0) clearPendingColdBrowseRestores()
+  }
+
+  private fun notifyPendingColdBrowseRestores() {
+    pendingColdBrowseRestores.snapshot().forEach { parentMediaId ->
+      try {
+        notifyChildrenChanged(parentMediaId)
+      } catch (error: Exception) {
+        Log.w(tag, "Unable to notify a restored browse page (${error.javaClass.simpleName})")
+      }
+    }
+  }
+
+  private fun clearPendingColdBrowseRestores() {
+    pendingColdBrowseRestores.clear()
+    browseEnrichmentGeneration = -1
+    browseEnrichmentCallbacksRemaining = 0
   }
 
   /**
@@ -1095,21 +2169,73 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     val cache = DeviceManager.coverCache ?: return
     val itemId = playbackSession.libraryItemId ?: return
     if (playbackSession.localLibraryItem != null) return  // local already has bitmap
-    if (cache.cachedUri(itemId) != null) return  // already baked
-    if (cache.hasAttempted(itemId)) return  // don't retry-storm
-    val server = DeviceManager.serverAddress
-    if (server.isEmpty()) return
-    val url = "$server/api/items/$itemId/cover"
-    cache.fetchAsync(itemId, url) {
-      android.os.Handler(android.os.Looper.getMainLooper()).post {
+    val ownerLease = playbackSession.connectionLease ?: return
+    val ownerConfig = DeviceManager.getServerConnectionConfig(ownerLease) ?: return
+    if (cache.cachedUri(itemId, ownerConfig, ownerLease) != null) return  // already baked
+    if (cache.hasAttempted(itemId, ownerConfig, ownerLease)) return  // don't retry-storm
+    val url = Uri.parse(ownerConfig.address).buildUpon()
+      .appendPath("api")
+      .appendPath("items")
+      .appendPath(itemId)
+      .appendPath("cover")
+      .build()
+      .toString()
+    cache.fetchAsync(itemId, url, ownerConfig, ownerLease) {
+      postToMainIfAlive {
         try {
-          if (currentPlaybackSession?.id == playbackSession.id) {
-            mediaSession.setMetadata(playbackSession.getMediaMetadataCompat(ctx))
+          if (this::mediaSession.isInitialized &&
+            currentPlaybackSession === playbackSession &&
+            DeviceManager.getServerConnectionConfig(ownerLease) === ownerConfig
+          ) {
+            val metadata = playbackSession.getMediaMetadataCompat(ctx)
+            grantPlaybackArtworkAccess(metadata)
+            mediaSession.setMetadata(metadata)
             Log.d(tag, "Refreshed media metadata with baked cover bitmap for $itemId")
           }
         } catch (e: Exception) {
-          Log.w(tag, "Refresh metadata after cover fetch failed: ${e.message}")
+          Log.w(tag, "Refresh metadata after cover fetch failed (${e.javaClass.simpleName})")
         }
+      }
+    }
+  }
+
+  /**
+   * Grants every app-owned FileProvider URI in playing metadata before the
+   * MediaSession publishes it to another process.
+   */
+  private fun grantPlaybackArtworkAccess(metadata: MediaMetadataCompat) {
+    listOf(
+      MediaMetadataCompat.METADATA_KEY_ALBUM_ART_URI,
+      MediaMetadataCompat.METADATA_KEY_ART_URI,
+      MediaMetadataCompat.METADATA_KEY_DISPLAY_ICON_URI
+    )
+      .mapNotNull { key ->
+        metadata.getString(key)?.let { rawUri -> runCatching { Uri.parse(rawUri) }.getOrNull() }
+      }
+      .distinct()
+      .forEach(::grantPlaybackArtworkAccess)
+  }
+
+  private fun grantPlaybackArtworkAccess(uri: Uri?) {
+    if (uri?.scheme != "content" ||
+      uri.authority != "${BuildConfig.APPLICATION_ID}.fileprovider"
+    ) {
+      return
+    }
+
+    val targetPackages = LinkedHashSet<String>().apply {
+      addAll(installedSystemArtworkConsumers)
+      addAll(validatedBrowserPackages.snapshot())
+    }
+    targetPackages.forEach { packageName ->
+      try {
+        ctx.grantUriPermission(
+          packageName,
+          uri,
+          Intent.FLAG_GRANT_READ_URI_PERMISSION
+        )
+      } catch (error: Exception) {
+        Log.w(tag, "Unable to grant playback artwork access (${error.javaClass.simpleName})")
       }
     }
   }
@@ -1121,16 +2247,25 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
    * FileProvider URI from another UID (Polestar repro: see crash on
    * com.android.car.apps.common.imaging.LocalImageFetcher).
    */
-  private fun grantCoverUriPermissions(items: List<MediaBrowserCompat.MediaItem>) {
-    val callerPackage = try { currentBrowserInfo?.packageName } catch (_: Exception) { null }
-            ?: return
+  private fun currentBrowserPackageName(): String? =
+    try {
+      currentBrowserInfo?.packageName
+    } catch (_: Exception) {
+      null
+    }
+
+  private fun grantCoverUriPermissions(
+    items: List<MediaBrowserCompat.MediaItem>,
+    callerPackage: String?
+  ) {
+    if (callerPackage == null) return
     items.forEach { item ->
       val uri = item.description.iconUri
       if (uri != null && uri.scheme == "content") {
         try {
           ctx.grantUriPermission(callerPackage, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch (e: Exception) {
-          Log.w(tag, "grantUriPermission failed for $uri to $callerPackage: ${e.message}")
+      } catch (e: Exception) {
+        Log.w(tag, "Unable to grant browse artwork access (${e.javaClass.simpleName})")
         }
       }
     }
@@ -1147,28 +2282,51 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
    * LibraryItem object.
    */
   private val coverUrlIdRegex = "/api/items/([^/?]+)/cover".toRegex()
+  private val authorImageUrlIdRegex = "/api/authors/([^/?]+)/image".toRegex()
   private fun prefetchCoversAndNotify(parentMediaId: String, items: List<MediaBrowserCompat.MediaItem>) {
     val cache = DeviceManager.coverCache ?: return
-    val toFetch = items.mapNotNull { item ->
+    val namespace = cache.currentNamespace() ?: return
+    // Claim before inspecting a potentially huge result set. A host reload for
+    // this parent then returns immediately instead of scanning for another batch.
+    if (!browseCoverPrefetchGate.claim(namespace, parentMediaId)) return
+
+    val toFetch = items.asSequence().mapNotNull { item ->
       val uri = item.description.iconUri ?: return@mapNotNull null
       val scheme = uri.scheme ?: return@mapNotNull null
       if (scheme != "http" && scheme != "https") return@mapNotNull null
-      val id = coverUrlIdRegex.find(uri.toString())?.groupValues?.get(1) ?: return@mapNotNull null
+      val uriString = uri.toString()
+      val cacheKey = coverUrlIdRegex.find(uriString)?.groupValues?.get(1)
+        ?: authorImageUrlIdRegex.find(uriString)?.groupValues?.get(1)?.let { "author_$it" }
+        ?: return@mapNotNull null
       // Skip if already cached or we've already tried this process lifetime
       // (latter prevents notifyChildrenChanged retry-storms on failed URLs).
-      if (cache.cachedUri(id) != null || cache.hasAttempted(id)) return@mapNotNull null
-      id to uri.toString()
-    }
+      if (cache.cachedUri(cacheKey) != null || cache.hasAttempted(cacheKey)) return@mapNotNull null
+      cacheKey to uriString
+    }.distinctBy { it.first }
+      // Large libraries can return thousands of items. Warm one small visible
+      // batch for this parent/server during the service session. The resulting
+      // host reload may consume those files but cannot chain into the next 24;
+      // every remaining item keeps its compliant local fallback artwork.
+      .take(24)
+      .toList()
 
     if (toFetch.isEmpty()) return
 
     val remaining = java.util.concurrent.atomic.AtomicInteger(toFetch.size)
-    toFetch.forEach { (id, url) ->
-      cache.fetchAsync(id, url) {
+    toFetch.forEach { (cacheKey, url) ->
+      cache.fetchAsync(cacheKey, url) {
         if (remaining.decrementAndGet() == 0) {
           Log.d(tag, "prefetchCoversAndNotify: notify $parentMediaId (${toFetch.size} covers)")
-          notifyChildrenChanged(parentMediaId)
+          postToMainIfAlive { notifyChildrenChanged(parentMediaId) }
         }
+      }
+    }
+  }
+
+  private fun hasPlayableDownloads(): Boolean {
+    return listOf("book", "podcast").any { mediaType ->
+      DeviceManager.dbManager.getLocalLibraryItems(mediaType).any { localItem ->
+        localItem.media.getAudioTracks().isNotEmpty()
       }
     }
   }
@@ -1184,42 +2342,173 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     items: MutableList<MediaBrowserCompat.MediaItem>?,
     parentMediaId: String
   ) {
-    if (items.isNullOrEmpty()) {
-      result.sendResult(items)
-      return
-    }
-    grantCoverUriPermissions(items)
-    result.sendResult(items)
-    prefetchCoversAndNotify(parentMediaId, items)
+    val callerPackage = browserResultCallerPackages.remove(result)
+    sendChildren(result, items, parentMediaId, callerPackage)
   }
 
-  // Only allowing android auto or similar to access media browser service
-  //  normal loading of audiobooks is handled in webview (not natively)
+  private fun sendChildren(
+    result: Result<MutableList<MediaBrowserCompat.MediaItem>>,
+    items: MutableList<MediaBrowserCompat.MediaItem>?,
+    parentMediaId: String,
+    callerPackage: String?
+  ) {
+    if (items.isNullOrEmpty()) {
+      completeBrowseResult(result, items, parentMediaId)
+      return
+    }
+    // Preserve the original remote URLs long enough for our in-process cache
+    // to fetch them, but never expose those URLs (or bitmaps) to the AAOS host.
+    val boundedItems = browseResultTree.replaceChildren(parentMediaId, items)
+    prefetchCoversAndNotify(parentMediaId, boundedItems)
+    val safeItems = BrowseArtworkPolicy.sanitize(boundedItems)
+    grantCoverUriPermissions(safeItems, callerPackage)
+    completeBrowseResult(result, safeItems, parentMediaId)
+  }
+
+  /** Completes a detached browse request at most once, including timeouts. */
+  private fun completeBrowseResult(
+    result: Result<MutableList<MediaBrowserCompat.MediaItem>>,
+    items: MutableList<MediaBrowserCompat.MediaItem>?,
+    parentMediaId: String
+  ): Boolean {
+    if (serviceDestroyed) return false
+    val firstCompletion = synchronized(completedBrowseResults) {
+      completedBrowseResults.put(result, true) == null
+    }
+    if (!firstCompletion) return false
+    browserResultTimeouts.remove(result)?.let(mainHandler::removeCallbacks)
+    browserResultCallerPackages.remove(result)
+    val expectedEpoch = browserResultConnectionEpochs.remove(result)
+    val expectedConnectionId = browserResultConnectionIds.remove(result)
+    val offlineSafeItems = items.orEmpty().all { item ->
+      val mediaId = item.mediaId.orEmpty()
+      mediaId == DOWNLOADS_ROOT || mediaId.startsWith("local")
+    }
+    val connectionChanged = when {
+      parentMediaId == DOWNLOADS_ROOT || parentMediaId.startsWith("local") -> false
+      expectedEpoch == null -> false
+      expectedConnectionId != null ->
+        !DeviceManager.isConnectionStateCurrent(expectedEpoch, expectedConnectionId)
+      parentMediaId == AUTO_MEDIA_ROOT -> false
+      offlineSafeItems -> false
+      else -> true
+    }
+    val safeResult = if (connectionChanged) {
+      if (parentMediaId == AUTO_MEDIA_ROOT) null else mutableListOf()
+    } else {
+      items
+    }
+    result.sendResult(safeResult)
+    return true
+  }
+
+  private fun scheduleBrowseResultTimeout(
+    result: Result<MutableList<MediaBrowserCompat.MediaItem>>,
+    parentMediaId: String
+  ) {
+    val timeout = Runnable {
+      browserResultTimeouts.remove(result)
+      if (serviceDestroyed) return@Runnable
+      if (completeBrowseResult(result, mutableListOf(), parentMediaId)) {
+        Log.w(tag, "onLoadChildren: Timed out")
+        setMediaUnavailablePlaybackState()
+      }
+    }
+    browserResultTimeouts[result] = timeout
+    mainHandler.postDelayed(timeout, BROWSE_RESULT_TIMEOUT_MS)
+  }
+
+  // Allow known media clients and every trusted/system AAOS host. OEM car
+  // media package names vary, so a fixed package allowlist is insufficient.
   private fun isValid(packageName: String, uid: Int): Boolean {
     Log.d(tag, "onGetRoot: Checking package $packageName with uid $uid")
-    if (!VALID_MEDIA_BROWSERS.contains(packageName)) {
+    if (!mediaBrowserCallerValidator.isValid(packageName, uid)) {
       Log.d(tag, "onGetRoot: package $packageName not valid for the media browser service")
       return false
     }
     return true
   }
 
-  /**
-   * Cars App Quality requires the MediaBrowserService to handle the
-   * "user not signed in" startup scenario. When no Audiobookshelf server has
-   * been configured, surface an actionable error so the OEM Car Media template
-   * shows a "Sign in" button instead of empty tabs. Selecting it (only possible
-   * while parked) runs the resolution PendingIntent, which opens the native
-   * SettingsActivity sign-in screen.
-   *
-   * Routed through MediaSessionConnector.setCustomErrorMessage rather than
-   * mediaSession.setPlaybackState: the connector owns the session's playback
-   * state while a player is attached (since onCreate), so a raw setPlaybackState
-   * would be overwritten on the connector's next publish. The custom error is
-   * merged into every state the connector emits and persists until cleared.
-   */
+  /** Cars App Quality requires a fatal, actionable error at an empty root. */
   private fun setSignInRequiredPlaybackState() {
-    if (!this::mediaSessionConnector.isInitialized) return
+    invalidatePlaybackOperations()
+    mediaSessionCallback?.invalidatePendingPreparation()
+    // Stop any already-buffered remote audio before publishing the terminal
+    // auth state. Publishing afterward keeps the connector's pause update from
+    // replacing STATE_ERROR with an ordinary paused state.
+    if (this::currentPlayer.isInitialized) currentPlayer.pause()
+    setFatalCarPlaybackError(
+      messageRes = R.string.car_sign_in_required,
+      actionLabelRes = R.string.car_sign_in_action,
+      errorCode = PlaybackStateCompat.ERROR_CODE_AUTHENTICATION_EXPIRED
+    )
+    AbsLogger.info(tag, "onLoadChildren: No server configured — sign-in required")
+  }
+
+  /** AAOS natural-end handling owns the one final Finished sync. */
+  internal fun handlesEndedPlaybackAsCompletion(): Boolean =
+    isAndroidAuto && currentPlaybackSession != null
+
+  /**
+   * Prevent an eager AAOS prepare/play/search command from replacing the
+   * actionable authentication error with a generic "nothing playable" error.
+   * Offline downloads remain playable without a configured server.
+   */
+  private fun hasSelectedServerForPlayback(): Boolean =
+    DeviceManager.captureConnectionLease(DeviceManager.serverConnectionConfig) != null ||
+      DeviceManager.captureConnectionLease(
+        DeviceManager.getLastServerConnectionConfig()
+      ) != null
+
+  /**
+   * Returns whether the requested operation requires account recovery.
+   * A specific remote session always requires a configured server; a generic
+   * browse/search command can still proceed against downloaded media.
+   */
+  internal fun isSignInRequiredForPlayback(
+    playbackSession: PlaybackSession? = null
+  ): Boolean {
+    if (playbackSession?.isLocal == true) return false
+    if (playbackSession != null) {
+      val ownerId = playbackSession.serverConnectionConfigId ?: return true
+      val existingLease = playbackSession.connectionLease
+      if (existingLease != null) {
+        return existingLease.connectionId != ownerId ||
+          !DeviceManager.isConnectionLeaseCurrent(existingLease)
+      }
+      val ownerConfig = DeviceManager.getServerConnectionConfig(ownerId)
+      return DeviceManager.captureConnectionLease(ownerConfig) == null
+    }
+    if (hasSelectedServerForPlayback()) return false
+    return !hasPlayableDownloads()
+  }
+
+  internal fun publishSignInRequiredForPlaybackIfNeeded(
+    playbackSession: PlaybackSession? = null
+  ): Boolean {
+    if (!isSignInRequiredForPlayback(playbackSession)) return false
+    setSignInRequiredPlaybackState()
+    return true
+  }
+
+  internal fun setMediaUnavailablePlaybackState() {
+    // Token refresh/account removal can race every browse failure path. Never
+    // replace the required authentication error with a generic app error.
+    if (publishSignInRequiredForPlaybackIfNeeded()) return
+    setFatalCarPlaybackError(
+      messageRes = R.string.car_media_unavailable,
+      actionLabelRes = R.string.car_open_settings_action,
+      errorCode = PlaybackStateCompat.ERROR_CODE_APP_ERROR
+    )
+    AbsLogger.info(tag, "onLoadChildren: Server media unavailable — surfaced actionable error")
+  }
+
+  private fun setFatalCarPlaybackError(
+    messageRes: Int,
+    actionLabelRes: Int,
+    errorCode: Int
+  ) {
+    if (!this::mediaSessionConnector.isInitialized || !this::mediaSession.isInitialized) return
 
     val settingsIntent =
             Intent(this, SettingsActivity::class.java).apply {
@@ -1237,7 +2526,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             Bundle().apply {
               putString(
                       MediaConstants.PLAYBACK_STATE_EXTRAS_KEY_ERROR_RESOLUTION_ACTION_LABEL,
-                      getString(R.string.car_sign_in_action)
+                      getString(actionLabelRes)
               )
               putParcelable(
                       MediaConstants.PLAYBACK_STATE_EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT,
@@ -1245,27 +2534,33 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               )
             }
 
+    val message = getString(messageRes)
     mediaSessionConnector.setCustomErrorMessage(
-            getString(R.string.car_sign_in_required),
-            PlaybackStateCompat.ERROR_CODE_AUTHENTICATION_EXPIRED,
+            message,
+            errorCode,
             errorExtras
     )
-    if (!signInPromptActive) {
-      AbsLogger.info(tag, "onLoadChildren: No server configured — surfaced sign-in prompt to Car Media host")
-      signInPromptActive = true
-    }
+
+    // MediaSessionConnector preserves a custom error message but leaves the
+    // player's ordinary state intact. AAOS requires STATE_ERROR when nothing
+    // can be browsed or played, so publish the fatal state explicitly too.
+    mediaSession.setPlaybackState(
+      PlaybackStateCompat.Builder()
+        .setState(PlaybackStateCompat.STATE_ERROR, 0L, 0f)
+        .setErrorMessage(errorCode, message)
+        .setExtras(errorExtras)
+        .build()
+    )
   }
 
   /**
-   * Clears a previously-surfaced sign-in error once a server connection exists.
-   * No-op if the prompt was never shown, so it can be called on every root load.
+   * Clears a previously-surfaced fatal playback or browse error after recovery.
+   * Clearing the connector's custom error republishes the current player state.
    */
-  private fun clearSignInRequiredPlaybackState() {
-    if (!signInPromptActive) return
+  private fun clearFatalPlaybackErrorState() {
     if (this::mediaSessionConnector.isInitialized) {
       mediaSessionConnector.setCustomErrorMessage(null)
     }
-    signInPromptActive = false
   }
 
   override fun onGetRoot(
@@ -1273,18 +2568,33 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           clientUid: Int,
           rootHints: Bundle?
   ): BrowserRoot? {
+    if (serviceDestroyed) return null
+    // A new root can follow an account/server switch; never retain search
+    // results across browser sessions where they could expose stale titles.
+    cachedSearch = ""
+    cachedSearchResults.clear()
+    browseResultTree.clearMemory()
+    searchGeneration++
+    searchFuture?.cancel(true)
+    searchFuture = null
     // Verify that the specified package is allowed to access your content
     return if (!isValid(clientPackageName, clientUid)) {
       // No further calls will be made to other media browsing methods.
       null
     } else {
-      AbsLogger.info(tag, "onGetRoot: clientPackageName: $clientPackageName, clientUid: $clientUid")
-      isStarted = true
-
+      AbsLogger.info(tag, "onGetRoot: accepted trusted media browser")
+      // Record only after package/UID validation, then immediately grant the
+      // currently playing artwork in case this browser connected after the
+      // MediaSession metadata was first published.
+      validatedBrowserPackages.record(clientPackageName)
+      currentPlaybackSession?.let { playbackSession ->
+        grantPlaybackArtworkAccess(playbackSession.getCoverUri(ctx))
+      }
       // Reset cache if no longer connected to server or server changed
       if (mediaManager.checkResetServerItems()) {
-        AbsLogger.info(tag, "onGetRoot: Reset Android Auto server items cache (${DeviceManager.serverConnectionConfigString})")
+        AbsLogger.info(tag, "onGetRoot: Reset server media cache")
         forceReloadingAndroidAuto = true
+        lastRootLoadSucceeded = false
       }
 
       isAndroidAuto = true
@@ -1308,25 +2618,70 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           parentMediaId: String,
           result: Result<MutableList<MediaBrowserCompat.MediaItem>>
   ) {
-    AbsLogger.info(tag, "onLoadChildren: parentMediaId: $parentMediaId (${DeviceManager.serverConnectionConfigString})")
+    if (serviceDestroyed) {
+      result.sendResult(null)
+      return
+    }
+    currentBrowserPackageName()?.let { callerPackage ->
+      browserResultCallerPackages[result] = callerPackage
+    }
+    browserResultConnectionEpochs[result] = DeviceManager.currentConnectionStateEpoch()
+    browserResultConnectionIds[result] = currentBrowseServerConfigId()
+    AbsLogger.info(tag, "onLoadChildren: browse request received")
 
     result.detach()
 
-    // Cars App Quality: handle the "not signed in" MediaBrowserService scenario.
-    // At the browse root, show an actionable "Sign in" prompt when no server is
-    // configured; clear it once a connection exists. Evaluated only at the root
-    // so it doesn't run on every sub-tree load.
-    if (parentMediaId == AUTO_MEDIA_ROOT) {
-      if (DeviceManager.deviceData.serverConnectionConfigs.isEmpty()) {
+    // Every detached request must finish within the AAOS 10-second response
+    // budget even if an OEM/server callback is lost.
+    scheduleBrowseResultTimeout(result, parentMediaId)
+
+    try {
+
+    // Oversized results are exposed behind deterministic browsable range
+    // nodes. Generated descendants are already complete, so resolve them
+    // before attempting a server/root reload.
+    browseResultTree.lookup(parentMediaId)?.let { generatedChildren ->
+      sendChildren(result, generatedChildren.toMutableList(), parentMediaId)
+      return
+    }
+    // The range namespace is reserved. A stale or tampered signed route must
+    // fail closed instead of falling through as a server-controlled podcast ID.
+    if (browseResultTree.isGeneratedIdCandidate(parentMediaId)) {
+      sendChildren(result, mutableListOf(), parentMediaId)
+      return
+    }
+
+    val hasOfflineMedia = parentMediaId == AUTO_MEDIA_ROOT && hasPlayableDownloads()
+    val hasSelectedServer = DeviceManager.serverConnectionConfig != null ||
+      DeviceManager.getLastServerConnectionConfig() != null
+
+    // AAOS requires a null root result plus STATE_ERROR when authentication is
+    // required and no offline content can be used. Returning a browsable but
+    // empty Downloads tab makes the app look broken to users and reviewers.
+    if (parentMediaId == AUTO_MEDIA_ROOT && !hasSelectedServer) {
+      if (!hasOfflineMedia) {
         setSignInRequiredPlaybackState()
+        sendChildren(result, null, parentMediaId)
+        return
       } else {
-        clearSignInRequiredPlaybackState()
+        clearFatalPlaybackErrorState()
       }
     }
 
-    // Prevent crashing if app is restarted while browsing
-    if ((parentMediaId != DOWNLOADS_ROOT && parentMediaId != AUTO_MEDIA_ROOT) && !firstLoadDone) {
-      result.sendResult(null)
+    // AAOS can restore a deep page before asking for root after a service
+    // process restart. Complete this request immediately, initialize in the
+    // background, then notify the exact restored page so the host retries it.
+    if ((parentMediaId != DOWNLOADS_ROOT && parentMediaId != AUTO_MEDIA_ROOT) &&
+      !lastRootLoadSucceeded
+    ) {
+      pendingColdBrowseRestores.remember(parentMediaId)
+      sendChildren(result, mutableListOf(), parentMediaId)
+      ensureBrowseTreeLoaded(
+        hasOfflineMedia = hasPlayableDownloads(),
+        forceReload = forceReloadingAndroidAuto
+      ) { success ->
+        if (success) notifyChildrenChanged(parentMediaId)
+      }
       return
     }
 
@@ -1378,12 +2733,12 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
             // to show download icon
             val localLibraryItem =
-                    DeviceManager.dbManager.getLocalLibraryItemByLId(
+                    getLocalDownloadForCurrentServer(
                             itemInProgress.libraryItemWrapper.id
                     )
             localLibraryItem?.let { lli ->
               val localEpisode =
-                      (lli.media as Podcast).episodes?.find {
+                      (lli.media as? Podcast)?.episodes?.find {
                         it.serverEpisodeId == itemInProgress.episode.id
                       }
               itemInProgress.episode.localEpisodeId = localEpisode?.id
@@ -1408,10 +2763,10 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                     }
 
             val localLibraryItem =
-                    DeviceManager.dbManager.getLocalLibraryItemByLId(
+                    getLocalDownloadForCurrentServer(
                             itemInProgress.libraryItemWrapper.id
                     )
-            (itemInProgress.libraryItemWrapper as LibraryItem).localLibraryItemId =
+            (itemInProgress.libraryItemWrapper as? LibraryItem)?.localLibraryItemId =
                     localLibraryItem?.id // To show downloaded icon
           }
           mediaDescription = itemInProgress.libraryItemWrapper.getMediaDescription(progress, ctx)
@@ -1424,95 +2779,29 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       }
       sendChildren(result, localBrowseItems, parentMediaId)
     } else if (parentMediaId == AUTO_MEDIA_ROOT) {
-      Log.d(tag, "Trying to initialize browseTree.")
-      if (!this::browseTree.isInitialized || forceReloadingAndroidAuto) {
-        forceReloadingAndroidAuto = false
-        AbsLogger.info(tag, "onLoadChildren: Loading Android Auto items")
-        mediaManager.loadAndroidAutoItems {
-          AbsLogger.info(tag, "onLoadChildren: Loaded Android Auto data, initializing browseTree")
-
-          browseTree =
-                  BrowseTree(
-                          this,
-                          mediaManager.serverItemsInProgress,
-                          mediaManager.serverLibraries,
-                          mediaManager.allLibraryPersonalizationsDone
-                  )
-          onBrowseTreeInitialized()
-          val children =
-                  browseTree[parentMediaId]?.map { item ->
-                    Log.d(tag, "Found top menu item: ${item.description.title}")
-                    MediaBrowserCompat.MediaItem(
-                            item.description,
-                            MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
-                    )
-                  }
-
-          sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
-          firstLoadDone = true
-          if (mediaManager.serverLibraries.isNotEmpty()) {
-            AbsLogger.info(tag, "onLoadChildren: Android Auto fetching personalized data for all libraries")
-            mediaManager.populatePersonalizedDataForAllLibraries {
-              AbsLogger.info(tag, "onLoadChildren: Android Auto loaded personalized data for all libraries")
-              notifyChildrenChanged("/")
-            }
-
-            AbsLogger.info(tag, "onLoadChildren: Android Auto fetching in progress items")
-            mediaManager.initializeInProgressItems {
-              AbsLogger.info(tag, "onLoadChildren: Android Auto loaded in progress items")
-              notifyChildrenChanged("/")
-            }
-          }
+      AbsLogger.info(tag, "onLoadChildren: Loading Android Auto items")
+      ensureBrowseTreeLoaded(hasOfflineMedia, forceReloadingAndroidAuto) { success ->
+        if (!success) {
+          sendChildren(result, null, parentMediaId)
+          return@ensureBrowseTreeLoaded
         }
-      } else {
-        Log.d(tag, "Starting browseTree refresh")
-        browseTree =
-                BrowseTree(
-                        this,
-                        mediaManager.serverItemsInProgress,
-                        mediaManager.serverLibraries,
-                        mediaManager.allLibraryPersonalizationsDone
-                )
-        onBrowseTreeInitialized()
-        val children =
-                browseTree[parentMediaId]?.map { item ->
-                  Log.d(tag, "Found top menu item: ${item.description.title}")
-                  MediaBrowserCompat.MediaItem(
-                          item.description,
-                          MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
-                  )
-                }
 
-        AbsLogger.info(tag, "onLoadChildren: Android auto data loaded")
-        sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
-      }
-    } else if (parentMediaId == LIBRARIES_ROOT || parentMediaId == RECENTLY_ROOT)
-    {
-      Log.d(tag, "First load done: $firstLoadDone")
-      if (!firstLoadDone)
-      {
-        result.sendResult(null)
-        return
-      }
-
-      if (!this::browseTree.isInitialized)
-      {
-        // ✅ good: detach and wait for init
-        result.detach()
-        waitForBrowseTree {
-          val children = browseTree[parentMediaId]?.map { item ->
-            Log.d(tag, "[MENU: $parentMediaId] Showing list item ${item.description.title}")
+        // Personalized and in-progress callbacks may have changed the menu
+        // since its initial load, so rebuild the cheap in-memory tree here.
+        rebuildBrowseTree()
+        val children = browseTree[parentMediaId]
+          ?.map { item ->
+            Log.d(tag, "Found top menu item: ${item.description.title}")
             MediaBrowserCompat.MediaItem(
               item.description,
               MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
             )
           }
-          sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
-        }
-        return
+          ?.toMutableList()
+        sendChildren(result, children, parentMediaId)
       }
-
-      // Already initialized: just return
+    } else if (parentMediaId == LIBRARIES_ROOT || parentMediaId == RECENTLY_ROOT)
+    {
       val children = browseTree[parentMediaId]?.map { item ->
         Log.d(tag, "[MENU: $parentMediaId] Showing list item ${item.description.title}")
         MediaBrowserCompat.MediaItem(
@@ -1594,9 +2883,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     } else if (parentMediaId.startsWith(RECENTLY_ROOT)) {
       Log.d(tag, "Browsing recently $parentMediaId")
       val mediaIdParts = parentMediaId.split("__")
+      if (mediaIdParts.size != 3 && mediaIdParts.size != 4) {
+        Log.w(tag, "Ignoring malformed Recent media id")
+        sendChildren(result, mutableListOf(), parentMediaId)
+        return
+      }
       if (!mediaManager.getIsLibrary(mediaIdParts[2])) {
         Log.d(tag, "${mediaIdParts[2]} is not library")
-        result.sendResult(null)
+        sendChildren(result, mutableListOf(), parentMediaId)
         return
       }
       Log.d(tag, "Mediaparts: ${mediaIdParts.size} | $mediaIdParts")
@@ -1672,17 +2966,19 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       } else if (mediaIdParts.size == 4) {
         mediaManager.getLibraryRecentShelfByType(mediaIdParts[2], mediaIdParts[3]) { shelf ->
           if (shelf === null) {
-            result.sendResult(mutableListOf())
+            sendChildren(result, mutableListOf(), parentMediaId)
           } else {
             if (shelf.type == "book") {
               val children =
-                      (shelf as LibraryShelfBookEntity).entities?.map { libraryItem ->
+                      (shelf as LibraryShelfBookEntity).entities
+                        ?.filter { libraryItem -> libraryItem.checkHasTracks() }
+                        ?.map { libraryItem ->
                         val progress =
                                 mediaManager.serverUserMediaProgress.find {
                                   it.libraryItemId == libraryItem.id
                                 }
                         val localLibraryItem =
-                                DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItem.id)
+                                getLocalDownloadForCurrentServer(libraryItem.id)
                         libraryItem.localLibraryItemId = localLibraryItem?.id
                         val description =
                                 libraryItem.getMediaDescription(progress, ctx, null, false)
@@ -1698,29 +2994,30 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                         libraryItem.recentEpisode !== null
                       }
               val children =
-                      episodesWithRecentEpisode?.map { libraryItem ->
-                        val podcast = libraryItem.media as Podcast
+                      episodesWithRecentEpisode?.mapNotNull { libraryItem ->
+                        if (libraryItem.media !is Podcast) return@mapNotNull null
+                        val recentEpisode = libraryItem.recentEpisode ?: return@mapNotNull null
                         val progress =
                                 mediaManager.serverUserMediaProgress.find {
                                   it.libraryItemId == libraryItem.libraryId &&
-                                          it.episodeId == libraryItem.recentEpisode?.id
+                                          it.episodeId == recentEpisode.id
                                 }
 
                         // to show download icon
                         val localLibraryItem =
-                                DeviceManager.dbManager.getLocalLibraryItemByLId(
-                                        libraryItem.recentEpisode!!.id
+                                getLocalDownloadForCurrentServer(
+                                        recentEpisode.id
                                 )
                         localLibraryItem?.let { lli ->
                           val localEpisode =
-                                  (lli.media as Podcast).episodes?.find {
-                                    it.serverEpisodeId == libraryItem.recentEpisode.id
+                                  (lli.media as? Podcast)?.episodes?.find {
+                                    it.serverEpisodeId == recentEpisode.id
                                   }
-                          libraryItem.recentEpisode.localEpisodeId = localEpisode?.id
+                          recentEpisode.localEpisodeId = localEpisode?.id
                         }
 
                         val description =
-                                libraryItem.recentEpisode.getMediaDescription(
+                                recentEpisode.getMediaDescription(
                                         libraryItem,
                                         progress,
                                         ctx
@@ -1762,7 +3059,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                       }
               sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
             } else {
-              result.sendResult(mutableListOf())
+              sendChildren(result, mutableListOf(), parentMediaId)
             }
           }
         }
@@ -1782,9 +3079,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
          - CollectionId: COLLECTIONS
        5: SeriesId: AUTHOR_SERIES
       */
+      if (mediaIdParts.size < 4) {
+        Log.w(tag, "Ignoring malformed Library media id")
+        sendChildren(result, mutableListOf(), parentMediaId)
+        return
+      }
       if (!mediaManager.getIsLibrary(mediaIdParts[2])) {
         Log.d(tag, "${mediaIdParts[2]} is not library")
-        result.sendResult(null)
+        sendChildren(result, mutableListOf(), parentMediaId)
         return
       }
       Log.d(tag, "$mediaIdParts")
@@ -1798,7 +3100,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                               it.libraryItemId == libraryItem.id
                             }
                     val localLibraryItem =
-                            DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItem.id)
+                            getLocalDownloadForCurrentServer(libraryItem.id)
                     libraryItem.localLibraryItemId = localLibraryItem?.id
                     val description = libraryItem.getMediaDescription(progress, ctx, null, true)
                     MediaBrowserCompat.MediaItem(
@@ -1816,11 +3118,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           val seriesLetters =
                   seriesItems
                           .groupingBy { iwb ->
-                            iwb.title.substring(0, mediaIdParts[4].length + 1).uppercase()
+                            iwb.title.take(mediaIdParts[4].length + 1)
+                              .uppercase()
+                              .ifBlank { "#" }
                           }
                           .eachCount()
           if (seriesItems.size >
-                          DeviceManager.deviceData.deviceSettings!!
+                          deviceSettings
                                   .androidAutoBrowseLimitForGrouping &&
                           seriesItems.size > 1 &&
                           seriesLetters.size > 1
@@ -1830,7 +3134,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                       MediaBrowserCompat.MediaItem(
                               MediaDescriptionCompat.Builder()
                                       .setTitle(seriesLetter)
-                                      .setMediaId("${parentMediaId}${seriesLetter.last()}")
+                                      .setMediaId("${parentMediaId}${seriesLetter.lastOrNull() ?: '#'}")
                                       .setSubtitle("$seriesCount series")
                                       .build(),
                               MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
@@ -1854,11 +3158,11 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
         mediaManager.loadLibrarySeriesWithAudio(mediaIdParts[2]) { seriesItems ->
           Log.d(tag, "Received ${seriesItems.size} series")
           if (seriesItems.size >
-                          DeviceManager.deviceData.deviceSettings!!
+                          deviceSettings
                                   .androidAutoBrowseLimitForGrouping && seriesItems.size > 1
           ) {
             val seriesLetters =
-                    seriesItems.groupingBy { iwb -> iwb.title.first().uppercaseChar() }.eachCount()
+                    seriesItems.groupingBy { iwb -> iwb.title.firstOrNull()?.uppercaseChar() ?: '#' }.eachCount()
             val children =
                     seriesLetters.map { (seriesLetter, seriesCount) ->
                       MediaBrowserCompat.MediaItem(
@@ -1883,13 +3187,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
           }
         }
-      } else if (mediaIdParts[3] == "SERIES") {
+      } else if (mediaIdParts[3] == "SERIES" && mediaIdParts.size >= 5) {
         Log.d(tag, "Loading items for serie ${mediaIdParts[4]} from library ${mediaIdParts[2]}")
         mediaManager.loadLibrarySeriesItemsWithAudio(mediaIdParts[2], mediaIdParts[4]) {
                 libraryItems ->
           Log.d(tag, "Received ${libraryItems.size} library items")
           var items = libraryItems
-          if (DeviceManager.deviceData.deviceSettings!!.androidAutoBrowseSeriesSequenceOrder ===
+          if (deviceSettings.androidAutoBrowseSeriesSequenceOrder ===
                           AndroidAutoBrowseSeriesSequenceOrderSetting.DESC
           ) {
             items = libraryItems.reversed()
@@ -1901,7 +3205,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                               it.libraryItemId == libraryItem.id
                             }
                     val localLibraryItem =
-                            DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItem.id)
+                            getLocalDownloadForCurrentServer(libraryItem.id)
                     libraryItem.localLibraryItemId = localLibraryItem?.id
                     val description = libraryItem.getMediaDescription(progress, ctx, null, true)
                     MediaBrowserCompat.MediaItem(
@@ -1919,11 +3223,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           val authorLetters =
                   authorItems
                           .groupingBy { iwb ->
-                            iwb.name.substring(0, mediaIdParts[4].length + 1).uppercase()
+                            iwb.name.take(mediaIdParts[4].length + 1)
+                              .uppercase()
+                              .ifBlank { "#" }
                           }
                           .eachCount()
           if (authorItems.size >
-                          DeviceManager.deviceData.deviceSettings!!
+                          deviceSettings
                                   .androidAutoBrowseLimitForGrouping &&
                           authorItems.size > 1 &&
                           authorLetters.size > 1
@@ -1933,7 +3239,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                       MediaBrowserCompat.MediaItem(
                               MediaDescriptionCompat.Builder()
                                       .setTitle(authorLetter)
-                                      .setMediaId("${parentMediaId}${authorLetter.last()}")
+                                      .setMediaId("${parentMediaId}${authorLetter.lastOrNull() ?: '#'}")
                                       .setSubtitle("$authorCount authors")
                                       .build(),
                               MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
@@ -1957,11 +3263,11 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
         mediaManager.loadAuthorsWithBooks(mediaIdParts[2]) { authorItems ->
           Log.d(tag, "Received ${authorItems.size} authors")
           if (authorItems.size >
-                          DeviceManager.deviceData.deviceSettings!!
+                          deviceSettings
                                   .androidAutoBrowseLimitForGrouping && authorItems.size > 1
           ) {
             val authorLetters =
-                    authorItems.groupingBy { iwb -> iwb.name.first().uppercaseChar() }.eachCount()
+                    authorItems.groupingBy { iwb -> iwb.name.firstOrNull()?.uppercaseChar() ?: '#' }.eachCount()
             val children =
                     authorLetters.map { (authorLetter, authorCount) ->
                       MediaBrowserCompat.MediaItem(
@@ -1986,7 +3292,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
           }
         }
-      } else if (mediaIdParts[3] == "AUTHOR") {
+      } else if (mediaIdParts[3] == "AUTHOR" && mediaIdParts.size >= 5) {
         mediaManager.loadAuthorBooksWithAudio(mediaIdParts[2], mediaIdParts[4]) { libraryItems ->
           val children =
                   libraryItems.map { libraryItem ->
@@ -1995,7 +3301,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                               it.libraryItemId == libraryItem.id
                             }
                     val localLibraryItem =
-                            DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItem.id)
+                            getLocalDownloadForCurrentServer(libraryItem.id)
                     libraryItem.localLibraryItemId = localLibraryItem?.id
                     if (libraryItem.collapsedSeries != null) {
                       val description =
@@ -2014,14 +3320,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                   }
           sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
         }
-      } else if (mediaIdParts[3] == "AUTHOR_SERIES") {
+      } else if (mediaIdParts[3] == "AUTHOR_SERIES" && mediaIdParts.size >= 6) {
         mediaManager.loadAuthorSeriesBooksWithAudio(
                 mediaIdParts[2],
                 mediaIdParts[4],
                 mediaIdParts[5]
         ) { libraryItems ->
           var items = libraryItems
-          if (DeviceManager.deviceData.deviceSettings!!.androidAutoBrowseSeriesSequenceOrder ===
+          if (deviceSettings.androidAutoBrowseSeriesSequenceOrder ===
                           AndroidAutoBrowseSeriesSequenceOrderSetting.DESC
           ) {
             items = libraryItems.reversed()
@@ -2033,7 +3339,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                               it.libraryItemId == libraryItem.id
                             }
                     val localLibraryItem =
-                            DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItem.id)
+                            getLocalDownloadForCurrentServer(libraryItem.id)
                     libraryItem.localLibraryItemId = localLibraryItem?.id
                     val description = libraryItem.getMediaDescription(progress, ctx, null, true)
                     if (libraryItem.collapsedSeries != null) {
@@ -2064,7 +3370,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                   }
           sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
         }
-      } else if (mediaIdParts[3] == "COLLECTION") {
+      } else if (mediaIdParts[3] == "COLLECTION" && mediaIdParts.size >= 5) {
         Log.d(tag, "Loading collection ${mediaIdParts[4]} books from library ${mediaIdParts[2]}")
         mediaManager.loadLibraryCollectionBooksWithAudio(mediaIdParts[2], mediaIdParts[4]) {
                 libraryItems ->
@@ -2076,7 +3382,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                               it.libraryItemId == libraryItem.id
                             }
                     val localLibraryItem =
-                            DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItem.id)
+                            getLocalDownloadForCurrentServer(libraryItem.id)
                     libraryItem.localLibraryItemId = localLibraryItem?.id
                     val description = libraryItem.getMediaDescription(progress, ctx)
                     MediaBrowserCompat.MediaItem(
@@ -2097,7 +3403,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
                               it.libraryItemId == libraryItem.id
                             }
                     val localLibraryItem =
-                            DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItem.id)
+                            getLocalDownloadForCurrentServer(libraryItem.id)
                     libraryItem.localLibraryItemId = localLibraryItem?.id
                     val description = libraryItem.getMediaDescription(progress, ctx)
                     MediaBrowserCompat.MediaItem(
@@ -2108,11 +3414,16 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           sendChildren(result, children as MutableList<MediaBrowserCompat.MediaItem>?, parentMediaId)
         }
       } else {
-        result.sendResult(null)
+        sendChildren(result, mutableListOf(), parentMediaId)
       }
     } else {
       Log.d(tag, "Loading podcast episodes for podcast $parentMediaId")
       mediaManager.loadPodcastEpisodeMediaBrowserItems(parentMediaId, ctx) { sendChildren(result, it, parentMediaId) }
+    }
+    } catch (error: Exception) {
+      Log.e(tag, "onLoadChildren failed (${error.javaClass.simpleName})")
+      setMediaUnavailablePlaybackState()
+      sendChildren(result, mutableListOf(), parentMediaId)
     }
   }
 
@@ -2121,37 +3432,132 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           extras: Bundle?,
           result: Result<MutableList<MediaBrowserCompat.MediaItem>>
   ) {
+    if (serviceDestroyed) {
+      result.sendResult(mutableListOf())
+      return
+    }
+    val callerPackage = currentBrowserPackageName()
     result.detach()
-    if (cachedSearch != query) {
-      Log.d(tag, "Search bundle: $extras")
-      var foundBooks: MutableList<MediaBrowserCompat.MediaItem> = mutableListOf()
-      var foundPodcasts: MutableList<MediaBrowserCompat.MediaItem> = mutableListOf()
-      var foundSeries: MutableList<MediaBrowserCompat.MediaItem> = mutableListOf()
-      var foundAuthors: MutableList<MediaBrowserCompat.MediaItem> = mutableListOf()
+    searchFuture?.cancel(true)
+    searchFuture = null
+    val requestedConnectionEpoch = DeviceManager.currentConnectionStateEpoch()
+    val requestedConfigId = currentBrowseServerConfigId()
+    // Search is server-backed. Reject cached and in-flight server titles once
+    // the authorizing profile has been removed; local downloads remain
+    // available through the Downloads browse node.
+    if (requestedConfigId == null) {
+      cachedSearch = ""
+      cachedSearchResults.clear()
+      publishSignInRequiredForPlaybackIfNeeded()
+      result.sendResult(mutableListOf())
+      return
+    }
+    if (cachedSearch == query) {
+      if (!DeviceManager.isConnectionStateCurrent(
+          requestedConnectionEpoch,
+          requestedConfigId
+        )
+      ) {
+        cachedSearch = ""
+        cachedSearchResults.clear()
+        publishSignInRequiredForPlaybackIfNeeded()
+        result.sendResult(mutableListOf())
+        return
+      }
+      val cached = cachedSearchResults.toMutableList()
+      grantCoverUriPermissions(cached, callerPackage)
+      result.sendResult(cached)
+      return
+    }
 
-      mediaManager.serverLibraries.forEach { serverLibrary ->
-        runBlocking {
-          // Skip searching library if it doesn't have any audio files
-          if (serverLibrary.stats?.numAudioFiles == 0) return@runBlocking
-          val searchResult = mediaManager.doSearch(serverLibrary.id, query)
-          for (resultData in searchResult.entries.iterator()) {
-            when (resultData.key) {
-              "book" -> foundBooks.addAll(resultData.value)
-              "series" -> foundSeries.addAll(resultData.value)
-              "authors" -> foundAuthors.addAll(resultData.value)
-              "podcast" -> foundPodcasts.addAll(resultData.value)
+    Log.d(tag, "Search bundle: $extras")
+    val generation = ++searchGeneration
+    val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+    lateinit var timeout: Runnable
+
+    fun complete(items: MutableList<MediaBrowserCompat.MediaItem>) {
+      mainHandler.post {
+        if (serviceDestroyed || !completed.compareAndSet(false, true)) return@post
+        mainHandler.removeCallbacks(timeout)
+        if (currentBrowseServerConfigId() != requestedConfigId ||
+          !DeviceManager.isConnectionStateCurrent(
+            requestedConnectionEpoch,
+            requestedConfigId
+          )
+        ) {
+          cachedSearch = ""
+          cachedSearchResults.clear()
+          publishSignInRequiredForPlaybackIfNeeded()
+          result.sendResult(mutableListOf())
+          return@post
+        }
+        val safeItems = try {
+          val boundedItems = browseResultTree.replaceChildren(SEARCH_RESULTS_ROOT, items)
+          prefetchCoversAndNotify(AUTO_MEDIA_ROOT, boundedItems)
+          BrowseArtworkPolicy.sanitize(boundedItems)
+        } catch (error: Exception) {
+          Log.e(tag, "onSearch result processing failed (${error.javaClass.simpleName})")
+          mutableListOf()
+        }
+        if (generation == searchGeneration) {
+          cachedSearch = query
+          cachedSearchResults = safeItems.toMutableList()
+        }
+        grantCoverUriPermissions(safeItems, callerPackage)
+        result.sendResult(safeItems)
+        Log.d(tag, "onSearch: Done (${safeItems.size} results)")
+      }
+    }
+
+    timeout = Runnable {
+      if (!serviceDestroyed && completed.compareAndSet(false, true)) {
+        Log.w(tag, "onSearch: Timed out")
+        if (generation == searchGeneration) searchFuture?.cancel(true)
+        result.sendResult(mutableListOf())
+      }
+    }
+    mainHandler.postDelayed(timeout, BROWSE_RESULT_TIMEOUT_MS)
+
+    searchFuture = try {
+      searchExecutor.submit {
+      try {
+        val foundBooks = mutableListOf<MediaBrowserCompat.MediaItem>()
+        val foundPodcasts = mutableListOf<MediaBrowserCompat.MediaItem>()
+        val foundSeries = mutableListOf<MediaBrowserCompat.MediaItem>()
+        val foundAuthors = mutableListOf<MediaBrowserCompat.MediaItem>()
+
+        mediaManager.serverLibraries.toList().forEach { serverLibrary ->
+          if (Thread.currentThread().isInterrupted || generation != searchGeneration) {
+            return@forEach
+          }
+          if (serverLibrary.stats?.numAudioFiles == 0) return@forEach
+          val searchResult = runBlocking {
+            mediaManager.doSearch(serverLibrary.id, query)
+          }
+          searchResult.forEach { (type, items) ->
+            when (type) {
+              "book" -> foundBooks.addAll(items)
+              "podcast" -> foundPodcasts.addAll(items)
+              "series" -> foundSeries.addAll(items)
+              "authors" -> foundAuthors.addAll(items)
             }
           }
         }
+
+        foundBooks.addAll(foundPodcasts)
+        foundBooks.addAll(foundSeries)
+        foundBooks.addAll(foundAuthors)
+        complete(foundBooks)
+      } catch (error: Exception) {
+        Log.e(tag, "onSearch failed (${error.javaClass.simpleName})")
+        complete(mutableListOf())
       }
-      foundBooks.addAll(foundSeries)
-      foundBooks.addAll(foundAuthors)
-      cachedSearchResults = foundBooks
+      }
+    } catch (error: java.util.concurrent.RejectedExecutionException) {
+      Log.w(tag, "Search rejected during service teardown")
+      complete(mutableListOf())
+      null
     }
-    grantCoverUriPermissions(cachedSearchResults)
-    result.sendResult(cachedSearchResults)
-    cachedSearch = query
-    Log.d(tag, "onSearch: Done")
   }
 
   //
@@ -2159,8 +3565,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
   //
   private fun initSensor() {
     // ShakeDetector initialization
-    mSensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
-    mAccelerometer = mSensorManager!!.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+    mSensorManager = getSystemService(SENSOR_SERVICE) as? SensorManager
+    mAccelerometer = mSensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+
+    if (mAccelerometer == null) {
+      Log.i(tag, "No accelerometer available; shake-to-reset disabled")
+      mShakeDetector = null
+      return
+    }
 
     mShakeDetector = ShakeDetector()
     mShakeDetector!!.setOnShakeListener(
@@ -2179,13 +3591,20 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       Log.i(tag, "Shake sensor already registered")
       return
     }
-    shakeSensorUnregisterTask?.cancel()
+    val sensorManager = mSensorManager
+    val accelerometer = mAccelerometer
+    val shakeDetector = mShakeDetector
+    if (sensorManager == null || accelerometer == null || shakeDetector == null) {
+      Log.i(tag, "Shake sensor unavailable; registration skipped")
+      return
+    }
+    mainHandler.removeCallbacks(shakeSensorUnregisterRunnable)
 
     Log.d(tag, "Registering shake SENSOR ${mAccelerometer?.isWakeUpSensor}")
     val success =
-            mSensorManager!!.registerListener(
-                    mShakeDetector,
-                    mAccelerometer,
+            sensorManager.registerListener(
+                    shakeDetector,
+                    accelerometer,
                     SensorManager.SENSOR_DELAY_UI
             )
     if (success) isShakeSensorRegistered = true
@@ -2195,53 +3614,76 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     if (!isShakeSensorRegistered) return
 
     // Unregister shake sensor after wake up expiration
-    shakeSensorUnregisterTask?.cancel()
-    shakeSensorUnregisterTask =
-            Timer("ShakeUnregisterTimer", false).schedule(SLEEP_TIMER_WAKE_UP_EXPIRATION) {
-              Handler(Looper.getMainLooper()).post {
-                Log.d(tag, "wake time expired: Unregistering shake sensor")
-                mSensorManager!!.unregisterListener(mShakeDetector)
-                isShakeSensorRegistered = false
-              }
-            }
+    mainHandler.removeCallbacks(shakeSensorUnregisterRunnable)
+    mainHandler.postDelayed(shakeSensorUnregisterRunnable, SLEEP_TIMER_WAKE_UP_EXPIRATION)
+  }
+
+  internal fun unregisterSensorImmediately() {
+    mainHandler.removeCallbacks(shakeSensorUnregisterRunnable)
+    mSensorManager?.unregisterListener(mShakeDetector)
+    isShakeSensorRegistered = false
   }
 
   private val networkCallback =
           object : ConnectivityManager.NetworkCallback() {
+            private fun publishNetworkState(networkCapabilities: NetworkCapabilities?) {
+              val nextIsUnmetered =
+                      networkCapabilities?.hasCapability(
+                              NetworkCapabilities.NET_CAPABILITY_NOT_METERED
+                      ) == true
+              val nextHasConnectivity =
+                      networkCapabilities?.hasCapability(
+                              NetworkCapabilities.NET_CAPABILITY_VALIDATED
+                      ) == true &&
+                              networkCapabilities.hasCapability(
+                                      NetworkCapabilities.NET_CAPABILITY_INTERNET
+                              )
+
+              postToMainIfAlive {
+                isUnmeteredNetwork = nextIsUnmetered
+                hasNetworkConnectivity = nextHasConnectivity
+                Log.i(
+                        tag,
+                        "Network state changed. hasNetworkConnectivity=$hasNetworkConnectivity | isUnmeteredNetwork=$isUnmeteredNetwork"
+                )
+                clientEventEmitter?.onNetworkMeteredChanged(isUnmeteredNetwork)
+                if (hasNetworkConnectivity) {
+                  // A car commonly starts on metered cellular before its active
+                  // network is ready. Retry an empty/failed root as soon as any
+                  // validated connection arrives, even if the first tree never
+                  // initialized.
+                  if ((DeviceManager.serverConnectionConfig != null ||
+                                    DeviceManager.getLastServerConnectionConfig() != null) &&
+                                  !lastRootLoadSucceeded
+                  ) {
+                    forceReloadingAndroidAuto = true
+                    notifyChildrenChanged(AUTO_MEDIA_ROOT)
+                  }
+                }
+              }
+            }
+
             // Network capabilities have changed for the network
             override fun onCapabilitiesChanged(
                     network: Network,
                     networkCapabilities: NetworkCapabilities
             ) {
               super.onCapabilitiesChanged(network, networkCapabilities)
+              publishNetworkState(networkCapabilities)
+            }
 
-              isUnmeteredNetwork =
-                      networkCapabilities.hasCapability(
-                              NetworkCapabilities.NET_CAPABILITY_NOT_METERED
+            override fun onLost(network: Network) {
+              super.onLost(network)
+              // A request may match more than one network. Re-evaluate the
+              // current default rather than blindly reporting offline when a
+              // secondary network disappears.
+              val connectivityManager =
+                      getSystemService(ConnectivityManager::class.java) as ConnectivityManager
+              publishNetworkState(
+                      connectivityManager.activeNetwork?.let(
+                              connectivityManager::getNetworkCapabilities
                       )
-              hasNetworkConnectivity =
-                      networkCapabilities.hasCapability(
-                              NetworkCapabilities.NET_CAPABILITY_VALIDATED
-                      ) &&
-                              networkCapabilities.hasCapability(
-                                      NetworkCapabilities.NET_CAPABILITY_INTERNET
-                              )
-              Log.i(
-                      tag,
-                      "Network capabilities changed. hasNetworkConnectivity=$hasNetworkConnectivity | isUnmeteredNetwork=$isUnmeteredNetwork"
               )
-              clientEventEmitter?.onNetworkMeteredChanged(isUnmeteredNetwork)
-              if (hasNetworkConnectivity) {
-                // Force android auto loading if libraries are empty.
-                // Lack of network connectivity is most likely reason for libraries being empty
-                if (isBrowseTreeInitialized() &&
-                                firstLoadDone &&
-                                mediaManager.serverLibraries.isEmpty()
-                ) {
-                  forceReloadingAndroidAuto = true
-                  notifyChildrenChanged("/")
-                }
-              }
             }
           }
 

@@ -1,11 +1,29 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">ShelfDrive</string>
-    <string name="title_activity_main">ShelfDrive</string>
-    <string name="package_name">com.jedibrooker.shelfdrive</string>
+    <string name="settings_activity_title">ShelfDrive Settings</string>
+    <string name="settings_title">Settings</string>
+    <string name="settings_back">Back</string>
+    <string name="settings_parked_only">Sign-in and settings changes are only available while parked.</string>
+    <string name="settings_section_server">SERVER</string>
+    <string name="settings_server_url">Server URL</string>
+    <string name="settings_server_url_hint" translatable="false">https://example.com</string>
+    <string name="settings_username">Username</string>
+    <string name="settings_password">Password</string>
+    <string name="settings_connected">Connected to %1$s as %2$s</string>
+    <string name="settings_not_connected">Not connected</string>
+    <string name="settings_disconnect">Disconnect</string>
+    <string name="settings_disconnected">Disconnected</string>
+    <string name="settings_section_privacy">PRIVACY</string>
+    <string name="settings_privacy_policy">Privacy policy</string>
+    <string name="settings_section_playback">PLAYBACK</string>
+    <string name="settings_jump_forward">Jump forward</string>
+    <string name="settings_jump_backward">Jump backward</string>
+    <string name="settings_disable_auto_rewind">Disable auto-rewind</string>
+    <string name="package_name">com.jedibk.shelfdrive</string>
     <string name="custom_url_scheme">shelfdrive</string>
-    <string name="add_widget">Add widget</string>
-    <string name="app_widget_description">Simple widget for ShelfDrive playback</string>
+    <string name="playback_notification_channel_name">ShelfDrive playback</string>
+    <string name="playback_notification_channel_description">Playback controls and current media</string>
     <string name="action_jump_forward">Jump Forward</string>
     <string name="action_jump_backward">Jump Backward</string>
     <string name="action_skip_forward">Skip Forward</string>
@@ -14,4 +32,32 @@
     <!-- Car Media "not signed in" prompt (Cars App Quality requirement) -->
     <string name="car_sign_in_required">Sign in to your Audiobookshelf server</string>
     <string name="car_sign_in_action">Sign in</string>
+    <string name="car_media_unavailable">ShelfDrive couldn’t load media. Check your server, account access, and connection in Settings.</string>
+    <string name="car_open_settings_action">Open settings</string>
+    <string name="voice_search_no_match">ShelfDrive couldn’t find playable media matching “%1$s”.</string>
+    <string name="voice_search_no_playable_media">ShelfDrive couldn’t find anything playable in your library.</string>
+    <string name="voice_search_unavailable">ShelfDrive couldn’t search your library. Check your server and connection, then try again.</string>
+    <string name="voice_search_playback_failed">ShelfDrive found the media but couldn’t start playback. Check your connection and try again.</string>
+    <string name="settings_signing_in">Signing in…</string>
+    <string name="settings_sign_in_success">Signed in successfully</string>
+    <string name="settings_sign_in_failed">Sign-in failed</string>
+    <string name="settings_sign_in_failed_reason">Sign-in failed: %1$s</string>
+    <string name="settings_sign_in_required_fields">Enter the server URL, username, and password, then try again.</string>
+    <string name="settings_sign_in_invalid_credentials">Incorrect username or password. Check your credentials and try again.</string>
+    <string name="settings_sign_in_invalid_url">Enter a valid server URL. Production connections must use HTTPS.</string>
+    <string name="settings_sign_in_https_required">ShelfDrive requires an HTTPS server URL to protect your credentials and listening data.</string>
+    <string name="settings_sign_in_network_error">Could not reach the server. Check the server URL and your connection, then try again.</string>
+    <string name="settings_sign_in_invalid_response">The server did not return a valid sign-in response. Check the server URL and try again.</string>
+    <string name="settings_sign_in_http_error">The server rejected the sign-in request (HTTP %1$d). Please try again.</string>
+    <string name="settings_sign_in_storage_error">ShelfDrive could not securely save the account. No new sign-in was retained.</string>
+    <string name="settings_disconnecting">Disconnecting…</string>
+    <string name="data_disclosure_title">Data sent to your server</string>
+    <string name="data_disclosure_message">Before ShelfDrive connects to %1$s, it sends your username and password there for sign-in. If sign-in succeeds, it sends your account or user ID and access token, a random install-scoped app-instance identifier, device model, Android version, and ShelfDrive version. While you use the app—and during enabled background progress sync—it also sends searches, selected titles, playback actions, listening position, progress, and history to that server.\n\nThe ShelfDrive developer does not receive this data. The operator of the server you chose controls its storage, retention, sharing, and deletion. ShelfDrive requires HTTPS, but you should continue only if you trust that server and its operator.</string>
+    <string name="data_disclosure_continue">Continue and sign in</string>
+    <string name="data_disclosure_cancel">Cancel</string>
+    <string name="privacy_policy_title">ShelfDrive Privacy Policy</string>
+    <string name="privacy_policy_view_online">View online</string>
+    <string name="privacy_policy_no_browser">No browser is available. The privacy policy remains shown here in Settings.</string>
+    <string name="privacy_policy_url" translatable="false">https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY</string>
+    <string name="privacy_policy_summary">ShelfDrive connects only to the Audiobookshelf server you choose. To provide sign-in, browsing, playback, and progress sync, the app sends your username and password during sign-in, then account/user identifiers, access tokens, a random install-scoped app-instance identifier and device details, and listening/playback activity to that server over HTTPS. Your password is not retained.\n\nAccount tokens, server settings, listening state, cached artwork, and any offline media are stored on this vehicle. The ShelfDrive developer does not operate your Audiobookshelf server, receive this data, sell it, or use it for advertising. Your server operator controls retention and deletion of server-side data. Disconnecting removes the account from ShelfDrive; use your server to delete server-side records.\n\nThe full policy and contact details are available using “View online.”</string>
 </resources>

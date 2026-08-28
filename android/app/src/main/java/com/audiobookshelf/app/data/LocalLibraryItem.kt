@@ -1,12 +1,8 @@
 package com.audiobookshelf.app.data
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.ImageDecoder
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import android.support.v4.media.MediaDescriptionCompat
 import android.util.Log
 import androidx.core.content.FileProvider
@@ -50,45 +46,42 @@ class LocalLibraryItem(
 
   @JsonIgnore
   fun getCoverUri(ctx:Context): Uri {
-    if (coverContentUrl?.startsWith("file:") == true) {
-      val uri = FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", Uri.parse(coverContentUrl).toFile())
-      // Same cross-process grant story as the server cover cache — Car Media
-      // can't read our FileProvider without an explicit FLAG_GRANT_READ_URI_PERMISSION.
-      grantLocalCoverReadPerms(ctx, uri)
-      return uri
+    val fallback = Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
+    val rawCover = coverContentUrl ?: return fallback
+    val parsed = runCatching { Uri.parse(rawCover) }.getOrElse { return fallback }
+    if (parsed.scheme == "file") {
+      return runCatching {
+        FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", parsed.toFile())
+      }.onFailure { error ->
+        Log.w(
+          "LocalLibraryItem",
+          "Ignoring stale or inaccessible local cover (${error.javaClass.simpleName})"
+        )
+      }.getOrDefault(fallback)
     }
     // Named-form android.resource URI: numeric form crashes Car Media (see
     // LibraryAuthorItem.getPortraitUri for context).
-    return if (coverContentUrl != null) Uri.parse(coverContentUrl) else Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
-  }
-
-  private fun grantLocalCoverReadPerms(ctx: Context, uri: Uri) {
-    LOCAL_COVER_BROWSER_PACKAGES.forEach { pkg ->
-      try {
-        ctx.grantUriPermission(pkg, uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-      } catch (_: Exception) {
-        // Package may not be installed on this device — ignore.
-      }
+    if (parsed.scheme == "content") return parsed
+    return if (parsed.scheme == "android.resource" &&
+      parsed.authority == BuildConfig.APPLICATION_ID &&
+      parsed.pathSegments.size == 2 &&
+      parsed.pathSegments[0] == "drawable" &&
+      parsed.pathSegments[1].isNotBlank() &&
+      parsed.pathSegments[1].any { !it.isDigit() }
+    ) {
+      parsed
+    } else {
+      fallback
     }
-  }
-
-  companion object {
-    // Mirrors CoverCache.KNOWN_BROWSER_PACKAGES — kept duplicated here to keep
-    // the data class free of a media-package dependency.
-    private val LOCAL_COVER_BROWSER_PACKAGES = listOf(
-      "com.android.car.media",
-      "com.google.android.projection.gearhead",
-      "com.google.android.carassistant",
-      "com.volvocars.launcher"
-    )
   }
 
   @JsonIgnore
   fun getDuration():Double {
-    var total = 0.0
-    val audioTracks = media.getAudioTracks()
-    audioTracks.forEach{ total += it.duration }
-    return total
+    val total = media.getAudioTracks().asSequence()
+      .map { it.duration }
+      .filter { it.isFinite() && it > 0.0 }
+      .sum()
+    return total.takeIf { it.isFinite() } ?: 0.0
   }
 
   @JsonIgnore
@@ -106,20 +99,58 @@ class LocalLibraryItem(
     }
   }
 
+  /**
+   * Copies the downloaded item while removing linkage to a server account.
+   * Local paths, files, media metadata, and the device-local ID stay playable;
+   * the source object is never mutated because playback may still be active.
+   */
+  @JsonIgnore
+  fun copyWithoutServerIdentity(): LocalLibraryItem = LocalLibraryItem(
+    id = id,
+    folderId = folderId,
+    basePath = basePath,
+    absolutePath = absolutePath,
+    contentUrl = contentUrl,
+    isInvalid = isInvalid,
+    mediaType = mediaType,
+    media = media.copyWithoutServerIdentity(),
+    localFiles = localFiles.toMutableList(),
+    coverContentUrl = coverContentUrl,
+    coverAbsolutePath = coverAbsolutePath,
+    isLocal = isLocal,
+    serverConnectionConfigId = null,
+    serverAddress = null,
+    serverUserId = null,
+    libraryItemId = null
+  )
+
+  /** A podcast's local episode rows can retain the source server episode ID. */
+  private fun MediaType.copyWithoutServerIdentity(): MediaType = when (this) {
+    is Podcast -> Podcast(
+      metadata = metadata as PodcastMetadata,
+      coverPath = coverPath,
+      tags = tags.toMutableList(),
+      episodes = episodes?.map { episode ->
+        episode.copy(serverEpisodeId = null)
+      }?.toMutableList(),
+      autoDownloadEpisodes = autoDownloadEpisodes,
+      numEpisodes = numEpisodes
+    )
+    else -> this
+  }
+
   @JsonIgnore
   fun hasTracks(episode:PodcastEpisode?): Boolean {
-    var audioTracks = media.getAudioTracks() as MutableList<AudioTrack>
+    var audioTracks = media.getAudioTracks().toMutableList()
     if (episode != null) { // Get podcast episode audio track
       episode.audioTrack?.let { at -> mutableListOf(at) }?.let { tracks -> audioTracks = tracks }
     }
     if (audioTracks.size == 0) return false
     audioTracks.forEach {
       // Check that metadata is not null
-      if (it.metadata === null) {
-        return false
-      }
+      val metadata = it.metadata ?: return false
       // Check that file exists
-      val file = File(it.metadata!!.path)
+      val file = File(metadata.path)
       if (!file.exists()) {
         return false
       }
@@ -139,8 +170,8 @@ class LocalLibraryItem(
 
 
     val mediaMetadata = media.metadata
-    var chapters = if (mediaType == "book") (media as Book).chapters else mutableListOf()
-    var audioTracks = media.getAudioTracks() as MutableList<AudioTrack>
+    var chapters = if (mediaType == "book") (media as? Book)?.chapters else mutableListOf()
+    var audioTracks = media.getAudioTracks().toMutableList()
     val authorName = mediaMetadata.getAuthorDisplayName()
     val displayTitle = episode?.title ?: mediaMetadata.title
     var duration = getDuration()
@@ -164,16 +195,6 @@ class LocalLibraryItem(
   override fun getMediaDescription(progress:MediaProgressWrapper?, ctx:Context): MediaDescriptionCompat {
     val coverUri = getCoverUri(ctx)
 
-    var bitmap:Bitmap? = null
-    if (coverContentUrl != null) {
-      bitmap = if (Build.VERSION.SDK_INT < 28) {
-        MediaStore.Images.Media.getBitmap(ctx.contentResolver, coverUri)
-      } else {
-        val source: ImageDecoder.Source = ImageDecoder.createSource(ctx.contentResolver, coverUri)
-        ImageDecoder.decodeBitmap(source)
-      }
-    }
-
     val extras = Bundle()
     extras.putLong(
       MediaDescriptionCompat.EXTRA_DOWNLOAD_STATUS,
@@ -191,7 +212,8 @@ class LocalLibraryItem(
           MediaConstants.DESCRIPTION_EXTRAS_VALUE_COMPLETION_STATUS_PARTIALLY_PLAYED
         )
         extras.putDouble(
-          MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE, progress.progress
+          MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE,
+          progress.normalizedProgress
         )
       }
     } else if (mediaType != "podcast") {
@@ -211,10 +233,6 @@ class LocalLibraryItem(
       .setIconUri(coverUri)
       .setSubtitle(authorName)
       .setExtras(extras)
-
-    bitmap?.let {
-      mediaDescriptionBuilder.setIconBitmap(bitmap)
-    }
 
     return mediaDescriptionBuilder.build()
   }

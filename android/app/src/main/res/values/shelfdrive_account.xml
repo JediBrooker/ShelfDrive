@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shelfdrive_account_type" translatable="false">com.jedibk.shelfdrive.account</string>
+    <string name="shelfdrive_account_type_label">ShelfDrive</string>
+    <string name="shelfdrive_account_token_label">ShelfDrive session</string>
+    <string name="shelfdrive_account_use_app_settings">Manage ShelfDrive accounts from ShelfDrive settings while parked.</string>
+    <string name="shelfdrive_account_changes_restricted">Account changes are disabled by the vehicle owner or administrator.</string>
+    <string name="shelfdrive_account_registration_failed">ShelfDrive could not register this account with Android. No sign-in details were saved.</string>
+    <string name="shelfdrive_account_removal_failed">ShelfDrive could not remove this account from Android.</string>
+</resources>

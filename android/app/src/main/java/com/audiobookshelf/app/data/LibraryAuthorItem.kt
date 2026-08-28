@@ -28,18 +28,35 @@ class LibraryAuthorItem(
   val title get() = name
 
   @get:JsonIgnore
-  val bookCount get() = if (numBooks != null) numBooks else libraryItems!!.size
+  val bookCount get() = numBooks ?: libraryItems?.size ?: 0
 
   @JsonIgnore
   fun getPortraitUri(): Uri {
+    val fallbackUri = Uri.parse(
+      "android.resource://${BuildConfig.APPLICATION_ID}/drawable/md_account_outline"
+    )
     if (imagePath == null) {
       // Named-form android.resource:// URI. Numeric-form (".../$resourceId")
       // crashes Car Media's LocalImageFetcher with Resources$NotFoundException
       // because its cross-process resolver only handles drawable/<name>.
-      return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/md_account_outline")
+      return fallbackUri
     }
 
-    return Uri.parse("${DeviceManager.serverAddress}/api/authors/$id/image?token=${DeviceManager.token}")
+    DeviceManager.coverCache?.cachedUri("author_$id")?.let { return it }
+
+    if (!DeviceManager.isServerAddressAllowed(DeviceManager.serverAddress)) {
+      return fallbackUri
+    }
+    return try {
+      Uri.parse(DeviceManager.serverAddress).buildUpon()
+        .appendPath("api")
+        .appendPath("authors")
+        .appendPath(id)
+        .appendPath("image")
+        .build()
+    } catch (_: RuntimeException) {
+      fallbackUri
+    }
   }
 
   @JsonIgnore

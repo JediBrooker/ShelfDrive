@@ -1,7 +1,14 @@
 <resources>
+    <!-- App-owned theme colors; previously inherited accidentally from the
+         Capacitor AAR even though the AAOS artifact has no bridge UI. -->
+    <color name="colorPrimary">#FFFF7E2D</color>
+    <color name="colorPrimaryDark">#FF0A0E12</color>
+    <color name="colorAccent">#FFFF7E2D</color>
     <color name="light_blue_50">#FFE1F5FE</color>
     <color name="light_blue_200">#FF81D4FA</color>
     <color name="light_blue_600">#FF039BE5</color>
     <color name="light_blue_900">#FF01579B</color>
     <color name="background_dark">#232323</color>
+    <color name="settings_status_info">#8AB4F8</color>
+    <color name="settings_status_error">#FFB4AB</color>
 </resources>

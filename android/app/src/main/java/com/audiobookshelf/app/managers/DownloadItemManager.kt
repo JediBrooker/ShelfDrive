@@ -1,6 +1,7 @@
 package com.audiobookshelf.app.managers
 
 import android.app.DownloadManager
+import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
@@ -10,14 +11,13 @@ import com.anggrayudi.storage.file.MimeType
 import com.anggrayudi.storage.file.getAbsolutePath
 import com.anggrayudi.storage.file.moveFileTo
 import com.anggrayudi.storage.media.FileDescription
-import com.audiobookshelf.app.MainActivity
 import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.device.FolderScanner
 import com.audiobookshelf.app.models.DownloadItem
 import com.audiobookshelf.app.models.DownloadItemPart
 import com.fasterxml.jackson.core.json.JsonReadFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
-import com.getcapacitor.JSObject
+import com.audiobookshelf.app.util.SafeJsonObject as JSObject
 import java.io.File
 import java.io.FileOutputStream
 import java.util.*
@@ -30,7 +30,7 @@ import kotlinx.coroutines.launch
 class DownloadItemManager(
         var downloadManager: DownloadManager,
         private var folderScanner: FolderScanner,
-        var mainActivity: MainActivity,
+        var mainActivity: Context,
         private var clientEventEmitter: DownloadEventEmitter
 ) {
   val tag = "DownloadItemManager"
@@ -127,11 +127,11 @@ class DownloadItemManager(
               }
             }
 
-    Log.d(
-            tag,
-            "Start internal download to destination path ${downloadItemPart.finalDestinationPath} from ${downloadItemPart.serverUrl}"
-    )
-    InternalDownloadManager(fileOutputStream, internalProgressCallback)
+    Log.d(tag, "Start internal download part ${downloadItemPart.id}")
+    val ownerId = downloadItemQueue
+      .find { it.id == downloadItemPart.downloadItemId }
+      ?.serverConnectionConfigId
+    InternalDownloadManager(fileOutputStream, internalProgressCallback, ownerId)
             .download(downloadItemPart.serverUrl)
     downloadItemPart.downloadId = 1
     currentDownloadItemParts.add(downloadItemPart)
@@ -265,7 +265,7 @@ class DownloadItemManager(
     if (downloadItem == null) {
       Log.e(
               tag,
-              "Download item part finished but download item not found ${downloadItemPart.filename}"
+              "Download item part finished but its parent item was not found"
       )
       currentDownloadItemParts.remove(downloadItemPart)
     } else if (downloadCheckStatus == DownloadCheckStatus.Successful) {

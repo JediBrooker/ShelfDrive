@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug-only legacy phone cover-screen widget metadata. -->
+<samsung-appwidget-provider
+  display="sub_screen"
+  privacyWidget="false" />

@@ -38,12 +38,7 @@ class LibraryItem(
 ) : LibraryItemWrapper(id) {
   @get:JsonIgnore
   val title: String
-    get() {
-      if (collapsedSeries != null) {
-        return collapsedSeries!!.title
-      }
-      return media.metadata.title
-    }
+    get() = collapsedSeries?.title ?: media.metadata.title
   @get:JsonIgnore
   val authorName get() = media.metadata.getAuthorDisplayName()
 
@@ -57,15 +52,23 @@ class LibraryItem(
 
     // Prefer the locally-cached file (served via FileProvider) so cross-process
     // readers like Car Media — which don't have our server auth — can render.
-    // Falls back to the remote URI on the first browse before the cache fills.
     DeviceManager.coverCache?.cachedUri(id)?.let { return it }
 
     // As of v2.17.0 token is not needed with cover image requests
-    if (DeviceManager.isServerVersionGreaterThanOrEqualTo("2.17.0")) {
-      return Uri.parse("${DeviceManager.serverAddress}/api/items/$id/cover")
+    if (DeviceManager.isServerVersionGreaterThanOrEqualTo("2.17.0") &&
+      DeviceManager.isServerAddressAllowed(DeviceManager.serverAddress)
+    ) {
+      return Uri.parse(DeviceManager.serverAddress).buildUpon()
+        .appendPath("api")
+        .appendPath("items")
+        .appendPath(id)
+        .appendPath("cover")
+        .build()
     }
 
-    return Uri.parse("${DeviceManager.serverAddress}/api/items/$id/cover?token=${DeviceManager.token}")
+    // CoverCache may use authenticated requests privately, but credentials
+    // must never be exposed through browse/session metadata.
+    return Uri.parse("android.resource://${BuildConfig.APPLICATION_ID}/drawable/icon")
   }
 
   /**
@@ -75,11 +78,17 @@ class LibraryItem(
   @JsonIgnore
   fun getRemoteCoverUrl(): String? {
     if (media.coverPath == null) return null
-    return if (DeviceManager.isServerVersionGreaterThanOrEqualTo("2.17.0")) {
-      "${DeviceManager.serverAddress}/api/items/$id/cover"
-    } else {
-      "${DeviceManager.serverAddress}/api/items/$id/cover?token=${DeviceManager.token}"
+    val address = DeviceManager.serverAddress
+    if (!DeviceManager.isServerAddressAllowed(address)) return null
+    val builder = Uri.parse(address).buildUpon()
+      .appendPath("api")
+      .appendPath("items")
+      .appendPath(id)
+      .appendPath("cover")
+    if (!DeviceManager.isServerVersionGreaterThanOrEqualTo("2.17.0")) {
+      builder.appendQueryParameter("token", DeviceManager.token)
     }
+    return builder.build().toString()
   }
 
   @JsonIgnore
@@ -91,7 +100,11 @@ class LibraryItem(
   val seriesSequence: String
     get() {
       if (mediaType != "podcast") {
-        return ((media as Book).metadata as BookMetadata).series?.get(0)?.sequence.orEmpty()
+        return ((media as? Book)?.metadata as? BookMetadata)
+          ?.series
+          ?.firstOrNull()
+          ?.sequence
+          .orEmpty()
       } else {
         return ""
       }
@@ -130,7 +143,8 @@ class LibraryItem(
             MediaConstants.DESCRIPTION_EXTRAS_VALUE_COMPLETION_STATUS_PARTIALLY_PLAYED
           )
           extras.putDouble(
-            MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE, progress.progress
+            MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE,
+            progress.normalizedProgress
           )
         }
       } else if (mediaType != "podcast") {
@@ -151,20 +165,21 @@ class LibraryItem(
       extras.putString(MediaConstants.DESCRIPTION_EXTRAS_KEY_CONTENT_STYLE_GROUP_TITLE, groupTitle)
     }
 
+    val series = collapsedSeries
     val mediaId = if (localLibraryItemId != null) {
       localLibraryItemId
-    } else if (collapsedSeries != null) {
+    } else if (series != null) {
       if (authorId != null) {
-        "__LIBRARY__${libraryId}__AUTHOR_SERIES__${authorId}__${collapsedSeries!!.id}"
+        "__LIBRARY__${libraryId}__AUTHOR_SERIES__${authorId}__${series.id}"
       } else {
-        "__LIBRARY__${libraryId}__SERIES__${collapsedSeries!!.id}"
+        "__LIBRARY__${libraryId}__SERIES__${series.id}"
       }
     } else {
       id
     }
     var subtitle = authorName
-    if (collapsedSeries != null) {
-      subtitle = "${collapsedSeries!!.numBooks} books"
+    if (series != null) {
+      subtitle = "${series.numBooks} books"
     }
     var itemTitle = title
     if (showSeriesNumber == true && seriesSequence != "") {

@@ -27,7 +27,8 @@ class ShakeDetector : SensorEventListener {
   }
 
   override fun onSensorChanged(event: SensorEvent) {
-    if (mListener != null) {
+    val listener = mListener ?: return
+    if (event.values.size >= 3) {
       val x = event.values[0]
       val y = event.values[1]
       val z = event.values[2]
@@ -50,7 +51,7 @@ class ShakeDetector : SensorEventListener {
         AbsLogger.info("ShakeDetector", "Device shake above threshold ($gForce > $shakeThreshold)")
         mShakeTimestamp = now
         mShakeCount++
-        mListener!!.onShake(mShakeCount)
+        listener.onShake(mShakeCount)
       }
     }
   }

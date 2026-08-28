@@ -37,8 +37,16 @@ class CollapsedSeries(
     // and FileProvider serving like every other LibraryItem cover.
     libraryItemIds.firstOrNull()?.let { firstId ->
       val server = DeviceManager.serverAddress
-      if (server.isNotEmpty()) {
-        builder.setIconUri(Uri.parse("$server/api/items/$firstId/cover"))
+      if (DeviceManager.isServerAddressAllowed(server)) {
+        val coverUri = runCatching {
+          Uri.parse(server).buildUpon()
+            .appendPath("api")
+            .appendPath("items")
+            .appendPath(firstId)
+            .appendPath("cover")
+            .build()
+        }.getOrNull()
+        coverUri?.let(builder::setIconUri)
       }
     }
     return builder.build()

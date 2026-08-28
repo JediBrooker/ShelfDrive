@@ -49,9 +49,9 @@ class Podcast(
   @JsonIgnore
   override fun setAudioTracks(audioTracks:MutableList<AudioTrack>) {
     // Remove episodes no longer there in tracks
-    episodes = episodes?.filter { ep ->
+    episodes = episodes.orEmpty().filter { ep ->
       audioTracks.find { it.localFileId == ep.audioTrack?.localFileId } != null
-    } as MutableList<PodcastEpisode>
+    }.toMutableList()
 
     // Add new episodes
     audioTracks.forEach { at ->
@@ -94,7 +94,14 @@ class Podcast(
   // Used for FolderScanner local podcast item to get copy of Podcast excluding episodes
   @JsonIgnore
   override fun getLocalCopy(): Podcast {
-    return Podcast(metadata as PodcastMetadata,coverPath,tags, mutableListOf(),autoDownloadEpisodes, 0)
+    val podcastMetadata = metadata as? PodcastMetadata ?: PodcastMetadata(
+      metadata.title,
+      null,
+      null,
+      mutableListOf(),
+      metadata.explicit
+    )
+    return Podcast(podcastMetadata,coverPath,tags, mutableListOf(),autoDownloadEpisodes, 0)
   }
 
   @JsonIgnore
@@ -117,9 +124,14 @@ class Podcast(
   }
 
   @JsonIgnore
-  fun getNextUnfinishedEpisode(libraryItemId:String, mediaManager: MediaManager):PodcastEpisode? {
+  fun getNextUnfinishedEpisode(
+    libraryItemId: String,
+    mediaManager: MediaManager,
+    excludedEpisodeId: String? = null
+  ): PodcastEpisode? {
     val sortedEpisodes = episodes?.sortedByDescending { it.publishedAt }
     val podcastEpisode = sortedEpisodes?.find { episode ->
+      if (episode.id == excludedEpisodeId) return@find false
       val progress = mediaManager.serverUserMediaProgress.find { it.libraryItemId == libraryItemId && it.episodeId == episode.id }
       progress == null || !progress.isFinished
     }
@@ -189,7 +201,27 @@ class Book(
   }
   @JsonIgnore
   override fun getLocalCopy(): Book {
-    return Book(metadata as BookMetadata,coverPath,tags, mutableListOf(),chapters,mutableListOf(), ebookFile, null,null, 0)
+    val bookMetadata = metadata as? BookMetadata ?: BookMetadata(
+      metadata.title,
+      null,
+      null,
+      null,
+      mutableListOf(),
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      metadata.explicit,
+      null,
+      null,
+      null,
+      null,
+      null
+    )
+    return Book(bookMetadata,coverPath,tags, mutableListOf(),chapters,mutableListOf(), ebookFile, null,null, 0)
   }
 
   @JsonIgnore
@@ -253,7 +285,11 @@ data class Author(
   var id:String,
   var name:String,
   var coverPath:String?
-)
+) {
+  /** Keep server author identity and artwork paths out of diagnostics. */
+  override fun toString(): String =
+    "Author(hasCover=${!coverPath.isNullOrBlank()}, identityAndPath=<redacted>)"
+}
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class PodcastEpisode(
@@ -276,10 +312,10 @@ data class PodcastEpisode(
 ) {
   @JsonIgnore
   fun getMediaDescription(libraryItem:LibraryItemWrapper, progress:MediaProgressWrapper?, ctx: Context): MediaDescriptionCompat {
-    val coverUri = if (libraryItem is LocalLibraryItem) {
-      libraryItem.getCoverUri(ctx)
-    } else {
-      (libraryItem as LibraryItem).getCoverUri()
+    val coverUri = when (libraryItem) {
+      is LocalLibraryItem -> libraryItem.getCoverUri(ctx)
+      is LibraryItem -> libraryItem.getCoverUri()
+      else -> getUriToAbsIconDrawable(ctx, "audiobookshelf")
     }
 
     val extras = Bundle()
@@ -303,7 +339,8 @@ data class PodcastEpisode(
           MediaConstants.DESCRIPTION_EXTRAS_VALUE_COMPLETION_STATUS_PARTIALLY_PLAYED
         )
         extras.putDouble(
-          MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE, progress.progress
+          MediaConstants.DESCRIPTION_EXTRAS_KEY_COMPLETION_PERCENTAGE,
+          progress.normalizedProgress
         )
       }
     } else {
@@ -316,9 +353,9 @@ data class PodcastEpisode(
     val libraryItemDescription = libraryItem.getMediaDescription(null, ctx)
     val mediaId = localEpisodeId ?: id
     var subtitle = libraryItemDescription.title
-    if (publishedAt !== null) {
+    publishedAt?.let { publishedTimestamp ->
       val sdf = DateFormat.getDateInstance()
-      val publishedAtDT = Date(publishedAt!!)
+      val publishedAtDT = Date(publishedTimestamp)
       subtitle = "${sdf.format(publishedAtDT)} / $subtitle"
     }
 
@@ -328,10 +365,6 @@ data class PodcastEpisode(
       .setIconUri(coverUri)
       .setSubtitle(subtitle)
       .setExtras(extras)
-
-    libraryItemDescription.iconBitmap?.let {
-      mediaDescriptionBuilder.setIconBitmap(it)
-    }
 
     return mediaDescriptionBuilder.build()
   }
@@ -350,7 +383,11 @@ data class FileMetadata(
   var path:String,
   var relPath:String,
   var size:Long?
-)
+) {
+  /** Keep media filenames and server/local filesystem paths out of diagnostics. */
+  override fun toString(): String =
+    "FileMetadata(ext=$ext, size=$size, filenameAndPaths=<redacted>)"
+}
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class AudioFile(
@@ -402,7 +439,10 @@ data class SeriesType(
 data class Folder(
   var id:String,
   var fullPath:String
-)
+) {
+  /** Keep server folder identifiers and paths out of diagnostics. */
+  override fun toString(): String = "Folder(identityAndPath=<redacted>)"
+}
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class BookChapter(
@@ -412,9 +452,15 @@ data class BookChapter(
   var title:String?
 ) {
   @get:JsonIgnore
-  val startMs get() = (start * 1000L).toLong()
+  val startMs get() = secondsToMillis(start)
   @get:JsonIgnore
-  val endMs get() = (end * 1000L).toLong()
+  val endMs get() = secondsToMillis(end)
+
+  private fun secondsToMillis(seconds: Double): Long {
+    if (!seconds.isFinite() || seconds <= 0.0) return 0L
+    val maxSeconds = Long.MAX_VALUE.toDouble() / 1000.0
+    return if (seconds >= maxSeconds) Long.MAX_VALUE else (seconds * 1000.0).toLong()
+  }
 }
 
 @JsonTypeInfo(use= JsonTypeInfo.Id.DEDUCTION, defaultImpl = MediaProgress::class)
@@ -423,6 +469,10 @@ data class BookChapter(
   JsonSubTypes.Type(LocalMediaProgress::class)
 )
 open class MediaProgressWrapper(var isFinished:Boolean, var currentTime:Double, var progress:Double) {
+  @get:JsonIgnore
+  val normalizedProgress: Double
+    get() = progress.takeIf { it.isFinite() }?.coerceIn(0.0, 1.0) ?: 0.0
+
   open val mediaItemId get() = ""
 }
 

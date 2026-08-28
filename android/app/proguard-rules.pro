@@ -6,30 +6,27 @@
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
-# Kotlin metadata is needed by Capacitor's reflection for plugin discovery.
+# Release builds have no in-app diagnostic-log viewer. Remove routine Android
+# log calls (and their potentially sensitive arguments) while retaining
+# warnings/errors that are useful in Play crash and ANR reports.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}
+
+# Kotlin metadata is needed by Jackson's Kotlin module.
 -keep class kotlin.Metadata { *; }
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod
 
-# --- Capacitor + Cordova ------------------------------------------------
-# Capacitor finds plugins via reflection on @CapacitorPlugin / @PluginMethod.
--keep @com.getcapacitor.annotation.CapacitorPlugin class * { *; }
--keepclassmembers class * {
-    @com.getcapacitor.PluginMethod *;
-}
--keep class com.getcapacitor.** { *; }
--keep class org.apache.cordova.** { *; }
-
-# Our own plugins are loaded by name from MainActivity.registerPlugin.
--keep class com.audiobookshelf.app.plugins.** { *; }
-
 # --- ExoPlayer ----------------------------------------------------------
--keep class com.google.android.exoplayer2.** { *; }
--keep interface com.google.android.exoplayer2.** { *; }
+# ExoPlayer and its MediaSession extension ship consumer rules. Avoid blanket
+# keeps: they retain unreachable phone/offline services (including foreground-
+# service bytecode) in this dedicated AAOS media artifact.
 -dontwarn com.google.android.exoplayer2.**
 
 # --- AndroidX media / MediaSession --------------------------------------
--keep class androidx.media.** { *; }
--keep class android.support.v4.media.** { *; }
+# Manifest entry points are roots automatically; AndroidX ships consumer rules.
 -dontwarn androidx.media.**
 
 # --- Jackson (JSON serialization) ---------------------------------------
@@ -47,6 +44,11 @@
     <fields>;
 }
 -keep class com.fasterxml.jackson.** { *; }
+# jackson-module-kotlin's inline readValue<T>() creates anonymous TypeReference
+# subclasses at each call site. Preserve their generic signatures when they are
+# live, but allow R8 to remove subclasses from the dormant phone/plugin source
+# surface. A blanket keep here retained otherwise-unreachable plugin bytecode.
+-keep,allowshrinking,allowoptimization,allowobfuscation class * extends com.fasterxml.jackson.core.type.TypeReference { *; }
 -keepclassmembers class * {
     @com.fasterxml.jackson.annotation.* <fields>;
     @com.fasterxml.jackson.annotation.* <methods>;
@@ -68,14 +70,7 @@
 -keep class io.paperdb.** { *; }
 -keep class com.audiobookshelf.app.data.** { *; }
 
-# --- AndroidX MediaRouter ------------------------------------------------
--dontwarn androidx.mediarouter.**
-
 # --- Service / receivers referenced from manifest -----------------------
 -keep class com.audiobookshelf.app.player.PlayerNotificationService { *; }
--keep class com.audiobookshelf.app.MainActivity { *; }
 -keep class com.audiobookshelf.app.SettingsActivity { *; }
--keep class com.audiobookshelf.app.MediaPlayerWidget { *; }
--keep class com.audiobookshelf.app.media.** { *; }
--keep class com.audiobookshelf.app.managers.** { *; }
--keep class com.audiobookshelf.app.device.** { *; }
+-keep class com.audiobookshelf.app.accounts.ShelfDriveAuthenticatorService { *; }

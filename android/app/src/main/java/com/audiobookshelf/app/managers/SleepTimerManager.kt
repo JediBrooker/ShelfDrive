@@ -9,8 +9,7 @@ import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.player.PlayerNotificationService
 import com.audiobookshelf.app.player.SLEEP_TIMER_WAKE_UP_EXPIRATION
 import com.audiobookshelf.app.plugins.AbsLogger
-import java.util.*
-import kotlin.concurrent.schedule
+import java.util.Calendar
 import kotlin.math.roundToInt
 
 const val SLEEP_TIMER_CHIME_SOUND_VOLUME = 0.7f
@@ -19,7 +18,8 @@ class SleepTimerManager
 constructor(private val playerNotificationService: PlayerNotificationService) {
   private val tag = "SleepTimerManager"
 
-  private var sleepTimerTask: TimerTask? = null
+  private val mainHandler = Handler(Looper.getMainLooper())
+  @Volatile private var teardown = false
   private var sleepTimerRunning: Boolean = false
   private var sleepTimerEndTime: Long = 0L
   private var sleepTimerLength: Long = 0L
@@ -28,6 +28,22 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
   private var isAutoSleepTimer: Boolean = false // When timer was auto-set
   private var autoTimerDisabled: Boolean = false // Disable until out of auto timer period
   private var sleepTimerSessionId: String = ""
+  private var chimePlayer: MediaPlayer? = null
+  private val sleepTimerTick = object : Runnable {
+    override fun run() {
+      if (teardown || !sleepTimerRunning || !playerNotificationService.isServiceAlive()) return
+      try {
+        runSleepTimerTick()
+      } catch (error: Exception) {
+        Log.e(tag, "Sleep timer tick failed", error)
+        clearSleepTimer()
+      } finally {
+        if (!teardown && sleepTimerRunning && playerNotificationService.isServiceAlive()) {
+          mainHandler.postDelayed(this, SLEEP_TIMER_TICK_MS)
+        }
+      }
+    }
+  }
 
   /**
    * Gets the current time from the player notification service.
@@ -58,7 +74,8 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
    * @return Float - the playback speed.
    */
   private fun getPlaybackSpeed(): Float {
-    return playerNotificationService.currentPlayer.playbackParameters.speed
+    val speed = playerNotificationService.currentPlayer.playbackParameters.speed
+    return if (speed.isFinite() && speed > 0f) speed else 1f
   }
 
   /**
@@ -90,7 +107,8 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
     }
     // For chapter end timer
     if (sleepTimerEndTime <= 0) return 0
-    return (((sleepTimerEndTime - getCurrentTime()) / 1000).toDouble() / speed).roundToInt()
+    val safeSpeed = if (speed.isFinite() && speed > 0f) speed else 1f
+    return (((sleepTimerEndTime - getCurrentTime()) / 1000).toDouble() / safeSpeed).roundToInt()
   }
 
   /**
@@ -100,13 +118,13 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
    */
   private fun setSleepTimer(time: Long): Boolean {
     Log.d(tag, "Setting Sleep Timer for $time")
-    sleepTimerTask?.cancel()
-    sleepTimerRunning = true
-    sleepTimerFinishedAt = 0L
-    sleepTimerElapsed = 0L
-    setVolume(1f)
+    if (teardown || !playerNotificationService.isServiceAlive()) return false
+    if (time < 0L) {
+      Log.e(tag, "Sleep timer duration must be positive")
+      return false
+    }
 
-    if (time == 0L) {
+    val resolvedEndTime = if (time == 0L) {
       // Get the current chapter time and set the sleep timer to the end of the chapter
       val chapterEndTime = this.getChapterEndTime()
 
@@ -121,14 +139,20 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
         return false
       }
 
-      sleepTimerEndTime = chapterEndTime
-
-      if (sleepTimerEndTime > getDuration()) {
-        sleepTimerEndTime = getDuration()
-      }
+      chapterEndTime.coerceAtMost(getDuration())
     } else {
-      sleepTimerEndTime = 0L
+      0L
     }
+
+    // Only replace a running timer after the requested chapter/time has been
+    // validated. A failed chapter lookup must not leave `running=true` with no
+    // scheduled task.
+    mainHandler.removeCallbacks(sleepTimerTick)
+    sleepTimerRunning = true
+    sleepTimerFinishedAt = 0L
+    sleepTimerElapsed = 0L
+    sleepTimerEndTime = resolvedEndTime
+    setVolume(1f)
 
     // Set sleep timer length. Will be 0L if using chapter end time
     sleepTimerLength = time
@@ -141,59 +165,51 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
             isAutoSleepTimer
     )
 
-    sleepTimerTask =
-            Timer("SleepTimer", false).schedule(0L, 1000L) {
-              Handler(Looper.getMainLooper()).post {
-                if (getIsPlaying()) {
-                  sleepTimerElapsed += 1000L
-
-                  val sleepTimeSecondsRemaining =
-                          getSleepTimerTimeRemainingSeconds(getPlaybackSpeed())
-                  Log.d(
-                          tag,
-                          "Timer Elapsed $sleepTimerElapsed | Sleep TIMER time remaining $sleepTimeSecondsRemaining s"
-                  )
-
-                  if (sleepTimeSecondsRemaining > 0) {
-                    playerNotificationService.clientEventEmitter?.onSleepTimerSet(
-                            sleepTimeSecondsRemaining,
-                            isAutoSleepTimer
-                    )
-                  }
-
-                  if (sleepTimeSecondsRemaining == 30 && sleepTimerElapsed > 1 && DeviceManager.deviceData.deviceSettings?.enableSleepTimerAlmostDoneChime == true) {
-                    playChimeSound()
-                  }
-
-                  if (sleepTimeSecondsRemaining <= 0) {
-                    Log.d(tag, "Sleep Timer Pausing Player on Chapter")
-                    pause()
-
-                    playerNotificationService.clientEventEmitter?.onSleepTimerEnded(
-                            getCurrentTime()
-                    )
-                    clearSleepTimer()
-                    sleepTimerFinishedAt = System.currentTimeMillis()
-                  } else if (sleepTimeSecondsRemaining <= 60 &&
-                                  DeviceManager.deviceData
-                                          .deviceSettings
-                                          ?.disableSleepTimerFadeOut != true
-                  ) {
-                    // Start fading out audio down to 10% volume
-                    val percentToReduce = 1 - (sleepTimeSecondsRemaining / 60F)
-                    val volume = 1f - (percentToReduce * 0.9f)
-                    Log.d(
-                            tag,
-                            "SLEEP VOLUME FADE $volume | ${sleepTimeSecondsRemaining}s remaining"
-                    )
-                    setVolume(volume)
-                  } else {
-                    setVolume(1f)
-                  }
-                }
-              }
-            }
+    mainHandler.post(sleepTimerTick)
     return true
+  }
+
+  private fun runSleepTimerTick() {
+    if (!getIsPlaying()) return
+
+    sleepTimerElapsed += SLEEP_TIMER_TICK_MS
+    val sleepTimeSecondsRemaining =
+            getSleepTimerTimeRemainingSeconds(getPlaybackSpeed())
+    Log.d(
+            tag,
+            "Timer Elapsed $sleepTimerElapsed | Sleep TIMER time remaining $sleepTimeSecondsRemaining s"
+    )
+
+    if (sleepTimeSecondsRemaining > 0) {
+      playerNotificationService.clientEventEmitter?.onSleepTimerSet(
+              sleepTimeSecondsRemaining,
+              isAutoSleepTimer
+      )
+    }
+
+    if (sleepTimeSecondsRemaining == 30 && sleepTimerElapsed > 1 &&
+      DeviceManager.deviceData.deviceSettings?.enableSleepTimerAlmostDoneChime == true
+    ) {
+      playChimeSound()
+    }
+
+    if (sleepTimeSecondsRemaining <= 0) {
+      Log.d(tag, "Sleep Timer Pausing Player on Chapter")
+      pause()
+      playerNotificationService.clientEventEmitter?.onSleepTimerEnded(getCurrentTime())
+      clearSleepTimer()
+      sleepTimerFinishedAt = System.currentTimeMillis()
+    } else if (sleepTimeSecondsRemaining <= 60 &&
+      DeviceManager.deviceData.deviceSettings?.disableSleepTimerFadeOut != true
+    ) {
+      // Start fading out audio down to 10% volume
+      val percentToReduce = 1 - (sleepTimeSecondsRemaining / 60F)
+      val volume = 1f - (percentToReduce * 0.9f)
+      Log.d(tag, "SLEEP VOLUME FADE $volume | ${sleepTimeSecondsRemaining}s remaining")
+      setVolume(volume)
+    } else {
+      setVolume(1f)
+    }
   }
 
   /**
@@ -210,6 +226,10 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
       Log.d(tag, "Setting manual sleep timer for end of chapter")
       return setSleepTimer(0L)
     } else {
+      if (time <= 0L) {
+        Log.e(tag, "Fixed sleep timer duration must be positive")
+        return false
+      }
       Log.d(tag, "Setting manual sleep timer for $time")
       return setSleepTimer(time)
     }
@@ -217,13 +237,14 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
 
   /** Clears the sleep timer. */
   private fun clearSleepTimer() {
-    sleepTimerTask?.cancel()
-    sleepTimerTask = null
+    mainHandler.removeCallbacks(sleepTimerTick)
     sleepTimerEndTime = 0
     sleepTimerRunning = false
     playerNotificationService.unregisterSensor()
 
-    setVolume(1f)
+    if (!teardown && playerNotificationService.isServiceAlive()) {
+      setVolume(1f)
+    }
   }
 
   /**
@@ -236,6 +257,7 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
 
   /** Cancels the sleep timer. */
   fun cancelSleepTimer() {
+    if (teardown) return
     Log.d(tag, "Canceling Sleep Timer")
 
     if (isAutoSleepTimer) {
@@ -274,13 +296,22 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
 
   /** Plays chime sound */
   private fun playChimeSound() {
+    if (teardown) return
     AbsLogger.info(tag, "playChimeSound: Playing sleep timer chime sound")
     val ctx = playerNotificationService.getContext()
-    val mediaPlayer = MediaPlayer.create(ctx, R.raw.bell)
+    chimePlayer?.release()
+    val mediaPlayer = try {
+      MediaPlayer.create(ctx, R.raw.bell)
+    } catch (error: Exception) {
+      Log.w(tag, "Unable to create sleep timer chime", error)
+      null
+    } ?: return
+    chimePlayer = mediaPlayer
     mediaPlayer.setVolume(SLEEP_TIMER_CHIME_SOUND_VOLUME, SLEEP_TIMER_CHIME_SOUND_VOLUME)
     mediaPlayer.start()
     mediaPlayer.setOnCompletionListener {
       mediaPlayer.release()
+      if (chimePlayer === mediaPlayer) chimePlayer = null
     }
   }
 
@@ -380,6 +411,7 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
    * minute grace period after the timer ends or while media is playing.
    */
   fun handleShake() {
+    if (teardown) return
     if ((sleepTimerRunning && getIsPlaying()) || sleepTimerFinishedAt > 0L) {
       if (DeviceManager.deviceData.deviceSettings?.disableShakeToResetSleepTimer == true) {
         Log.d(tag, "Shake to reset sleep timer is disabled")
@@ -394,6 +426,7 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
    * @param time Long - the time to increase the sleep timer by.
    */
   fun increaseSleepTime(time: Long) {
+    if (teardown) return
     Log.d(tag, "Increase Sleep time $time")
     if (!sleepTimerRunning) return
 
@@ -421,6 +454,7 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
    * @param time Long - the time to decrease the sleep timer by.
    */
   fun decreaseSleepTime(time: Long) {
+    if (teardown) return
     Log.d(tag, "Decrease Sleep time $time")
     if (!sleepTimerRunning) return
 
@@ -447,6 +481,7 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
 
   /** Checks whether the auto sleep timer should be set, and set up auto sleep timer if so. */
   fun checkAutoSleepTimer() {
+    if (teardown || !playerNotificationService.isServiceAlive()) return
     if (sleepTimerRunning) { // Sleep timer already running
       return
     }
@@ -503,7 +538,12 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
           // Set `isAutoSleepTimer` to true to indicate that the timer was set automatically
           // and to not cause the timer to rewind
           isAutoSleepTimer = true
-          setSleepTimer(deviceSettings.sleepTimerLength)
+          if (deviceSettings.sleepTimerLength <= 0L) {
+            Log.e(tag, "Auto sleep timer duration must be positive")
+            isAutoSleepTimer = false
+          } else {
+            setSleepTimer(deviceSettings.sleepTimerLength)
+          }
         } else {
           Log.d(tag, "Not in auto sleep time period")
         }
@@ -516,6 +556,7 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
    * @param playbackSessionId String - the playback session ID.
    */
   fun handleMediaPlayEvent(playbackSessionId: String) {
+    if (teardown || !playerNotificationService.isServiceAlive()) return
     // Check if the playback session has changed
     // If it hasn't changed OR the sleep timer is running then check reset the timer
     //   e.g. You set a manual sleep timer for 10 mins, then decide to change books, the sleep timer
@@ -533,6 +574,7 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
    * Called when app resumes from background to sync UI state.
    */
   fun sendCurrentSleepTimerState() {
+    if (teardown || !playerNotificationService.isServiceAlive()) return
     if (sleepTimerRunning) {
       val timeRemaining = getSleepTimerTimeRemainingSeconds(getPlaybackSpeed())
       playerNotificationService.clientEventEmitter?.onSleepTimerSet(timeRemaining, isAutoSleepTimer)
@@ -540,5 +582,30 @@ constructor(private val playerNotificationService: PlayerNotificationService) {
       // No timer running - send 0 to clear any stale UI state
       playerNotificationService.clientEventEmitter?.onSleepTimerSet(0, false)
     }
+  }
+
+  /**
+   * Cancels timer work during service destruction without touching the player,
+   * emitting UI events, or scheduling the normal delayed sensor unregister.
+   */
+  fun shutdown() {
+    teardown = true
+    mainHandler.removeCallbacks(sleepTimerTick)
+    sleepTimerRunning = false
+    sleepTimerEndTime = 0L
+    sleepTimerElapsed = 0L
+    chimePlayer?.release()
+    chimePlayer = null
+    playerNotificationService.unregisterSensorImmediately()
+  }
+
+  internal val isTerminated: Boolean
+    get() = teardown
+
+  internal val isTimerRunning: Boolean
+    get() = sleepTimerRunning
+
+  companion object {
+    private const val SLEEP_TIMER_TICK_MS = 1_000L
   }
 }

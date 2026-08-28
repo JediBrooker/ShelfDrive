@@ -2,50 +2,92 @@ package com.audiobookshelf.app.media
 
 import android.app.Activity
 import android.content.Context
+import android.os.Bundle
+import android.provider.MediaStore
 import android.support.v4.media.MediaBrowserCompat
 import android.util.Log
 import com.audiobookshelf.app.data.*
+import com.audiobookshelf.app.device.ConnectionLease
 import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.server.ApiHandler
-import com.getcapacitor.JSObject
+import com.audiobookshelf.app.util.SafeJsonObject as JSObject
 import java.util.*
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import org.json.JSONException
 import org.json.JSONObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Keep automatic failover bounded so a detached AAOS root cannot spend an
+ * unbounded number of network timeouts probing stale profiles. The selected
+ * profile is always tried exactly once, followed by at most one distinct
+ * fallback; users can explicitly select any remaining profile in Settings.
+ */
+internal fun orderedServerConnectionCandidates(
+  selected: ServerConnectionConfig?,
+  saved: List<ServerConnectionConfig>,
+  maxAlternatives: Int = 1
+): List<ServerConnectionConfig> {
+  val selectedId = selected?.id
+  val alternatives = saved
+    .asSequence()
+    .filter { it.id != selectedId }
+    .distinctBy { it.id }
+    .take(maxAlternatives.coerceAtLeast(0))
+    .toList()
+  return listOfNotNull(selected) + alternatives
+}
 
 class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
   val tag = "MediaManager"
 
-  private var serverLibraryItems = mutableListOf<LibraryItem>() // Store all items here
+  // Server callbacks complete on different OkHttp threads. Keying by item ID
+  // makes registration and playback lookup atomic while personalized shelves,
+  // progress, browse, and search are loading concurrently.
+  private val serverLibraryItems = ConcurrentHashMap<String, LibraryItem>()
+  private val cacheGeneration = AtomicLong(0L)
+  private val cacheLock = Any()
 
-  private var cachedLibraryAuthors : MutableMap<String, MutableMap<String, LibraryAuthorItem>> = hashMapOf()
-  private var cachedLibraryAuthorItems : MutableMap<String, MutableMap<String, List<LibraryItem>>> = hashMapOf()
-  private var cachedLibraryAuthorSeriesItems : MutableMap<String, MutableMap<String, List<LibraryItem>>> = hashMapOf()
-  private var cachedLibrarySeries : MutableMap<String, List<LibrarySeriesItem>> = hashMapOf()
-  private var cachedLibrarySeriesItem : MutableMap<String, MutableMap<String, List<LibraryItem>>> = hashMapOf()
-  private var cachedLibraryCollections : MutableMap<String, MutableMap<String, LibraryCollection>> = hashMapOf()
-  private var cachedLibraryRecentShelves : MutableMap<String, MutableList<LibraryShelfType>> = hashMapOf()
-  private var cachedLibraryDiscovery : MutableMap<String, MutableList<LibraryItem>> = hashMapOf()
-  private var cachedLibraryBooks : MutableMap<String, List<LibraryItem>> = hashMapOf()
-  private var cachedLibraryPodcasts : MutableMap<String, MutableMap<String, LibraryItem>> = hashMapOf()
-  private var isLibraryPodcastsCached : MutableMap<String, Boolean> = hashMapOf()
-  var allLibraryPersonalizationsDone : Boolean = false
+  private val cachedLibraryAuthors = ConcurrentHashMap<String, MutableMap<String, LibraryAuthorItem>>()
+  private val cachedLibraryAuthorItems = ConcurrentHashMap<String, MutableMap<String, List<LibraryItem>>>()
+  private val cachedLibraryAuthorSeriesItems = ConcurrentHashMap<String, MutableMap<String, List<LibraryItem>>>()
+  private val cachedLibrarySeries = ConcurrentHashMap<String, List<LibrarySeriesItem>>()
+  private val cachedLibrarySeriesItem = ConcurrentHashMap<String, MutableMap<String, List<LibraryItem>>>()
+  private val cachedLibraryCollections = ConcurrentHashMap<String, MutableMap<String, LibraryCollection>>()
+  private val cachedLibraryRecentShelves = ConcurrentHashMap<String, MutableList<LibraryShelfType>>()
+  private val cachedLibraryDiscovery = ConcurrentHashMap<String, MutableList<LibraryItem>>()
+  private val cachedLibraryBooks = ConcurrentHashMap<String, List<LibraryItem>>()
+  private val cachedLibraryPodcasts = ConcurrentHashMap<String, MutableMap<String, LibraryItem>>()
+  private val isLibraryPodcastsCached = ConcurrentHashMap<String, Boolean>()
+  @Volatile var allLibraryPersonalizationsDone : Boolean = false
   private var libraryPersonalizationsDone : Int = 0
 
   private var selectedPodcast:Podcast? = null
   private var selectedLibraryItemId:String? = null
-  private var podcastEpisodeLibraryItemMap = mutableMapOf<String, LibraryItemWithEpisode>()
+  private val podcastEpisodeLibraryItemMap = ConcurrentHashMap<String, LibraryItemWithEpisode>()
   private var serverConfigIdUsed:String? = null
+  /**
+   * The exact saved-account lifetime that owns every remote object in this
+   * cache generation. A connection ID alone is insufficient because removing
+   * and re-adding the same server/username produces the same deterministic ID.
+   */
+  private var serverConnectionLeaseUsed: ConnectionLease? = null
   private var serverConfigLastPing:Long = 0L
-  var serverUserMediaProgress:MutableList<MediaProgress> = mutableListOf()
-  var serverItemsInProgress = listOf<ItemInProgress>()
-  var serverLibraries = listOf<Library>()
+  @Volatile var serverUserMediaProgress:MutableList<MediaProgress> = mutableListOf()
+  @Volatile var serverItemsInProgress = listOf<ItemInProgress>()
+  @Volatile var serverLibraries = listOf<Library>()
 
   var userSettingsPlaybackRate:Float? = null
+
+  private fun getLocalDownloadForCurrentServer(libraryItemId: String): LocalLibraryItem? =
+    DeviceManager.dbManager.getLocalLibraryItemByLId(
+      libraryItemId,
+      DeviceManager.serverConnectionConfigId
+    )
 
   fun getIsLibrary(id:String) : Boolean {
     return serverLibraries.find { it.id == id } != null
@@ -57,10 +99,9 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    *
    */
   fun getHasDiscovery(libraryId: String) : Boolean {
-    if (cachedLibraryDiscovery.containsKey(libraryId)) {
-      if (cachedLibraryDiscovery[libraryId]!!.isNotEmpty()) {
-        return true
-      }
+    val discovery = cachedLibraryDiscovery[libraryId]
+    if (discovery != null) {
+      return discovery.isNotEmpty()
     } else {
       populatePersonalizedDataForLibrary(libraryId){}
     }
@@ -75,14 +116,12 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * Add [libraryItem] to [serverLibraryItems] if it is not already added
    */
   private fun addServerLibrary(libraryItem: LibraryItem) {
-    if (serverLibraryItems.find { li -> li.id == libraryItem.id } == null) {
-      serverLibraryItems.add(libraryItem)
-    }
+    serverLibraryItems.putIfAbsent(libraryItem.id, libraryItem)
   }
 
   fun getSavedPlaybackRate():Float {
     if (userSettingsPlaybackRate != null) {
-      return userSettingsPlaybackRate ?: 1f
+      return normalizedPlaybackRate(userSettingsPlaybackRate)
     }
 
     val sharedPrefs = ctx.getSharedPreferences("CapacitorStorage", Activity.MODE_PRIVATE)
@@ -92,7 +131,9 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
         try {
           val userSettings = JSObject(userSettingsPref)
           if (userSettings.has("playbackRate")) {
-            userSettingsPlaybackRate = userSettings.getDouble("playbackRate").toFloat()
+            userSettingsPlaybackRate = normalizedPlaybackRate(
+              userSettings.getDouble("playbackRate").toFloat()
+            )
             return userSettingsPlaybackRate ?: 1f
           }
         } catch(je:JSONException) {
@@ -104,6 +145,7 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
   }
 
   fun setSavedPlaybackRate(newRate: Float) {
+    val safeRate = normalizedPlaybackRate(newRate)
     val sharedPrefs = ctx.getSharedPreferences("CapacitorStorage", Activity.MODE_PRIVATE)
     val sharedPrefEditor = sharedPrefs.edit()
     if (sharedPrefs != null) {
@@ -112,11 +154,11 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
         try {
           val userSettings = JSObject(userSettingsPref)
           // toString().toDouble() to prevent float conversion issues (ex 1.2f becomes 1.2000000476837158d)
-          userSettings.put("playbackRate", newRate.toString().toDouble())
+          userSettings.put("playbackRate", safeRate.toString().toDouble())
           sharedPrefEditor.putString("userSettings", userSettings.toString())
           sharedPrefEditor.apply()
-          userSettingsPlaybackRate = newRate
-          Log.d(tag, "Saved userSettings JSON from Android Auto with playbackRate=$newRate")
+          userSettingsPlaybackRate = safeRate
+          Log.d(tag, "Saved userSettings JSON from Android Auto with playbackRate=$safeRate")
         } catch(je:JSONException) {
           Log.e(tag, "Failed to save userSettings JSON ${je.localizedMessage}")
         }
@@ -124,51 +166,80 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
         // Not sure if this is the best place for this, but if a user has not changed any user settings in the app
         // the object will not exist yet, could be moved to a centralized place or created on first app load
         val userSettings = JSONObject()
-        userSettings.put("playbackRate", newRate.toString().toDouble())
+        userSettings.put("playbackRate", safeRate.toString().toDouble())
         sharedPrefEditor.putString("userSettings", userSettings.toString())
-        userSettingsPlaybackRate = newRate
-        Log.d(tag, "Created and saved userSettings JSON from Android Auto with playbackRate=$newRate")
+        sharedPrefEditor.apply()
+        userSettingsPlaybackRate = safeRate
+        Log.d(tag, "Created and saved userSettings JSON from Android Auto with playbackRate=$safeRate")
       }
     }
   }
 
-  fun checkResetServerItems():Boolean {
+  private fun normalizedPlaybackRate(rate: Float?): Float =
+    rate?.takeIf { it.isFinite() && it > 0f && it <= 5f } ?: 1f
+
+  fun checkResetServerItems(forceReset: Boolean = false):Boolean {
     // When opening android auto need to check if still connected to server
     //   and reset any server data already set
-    val serverConnConfig = if (DeviceManager.isConnectedToServer) DeviceManager.serverConnectionConfig else DeviceManager.deviceData.getLastServerConnectionConfig()
+    val serverConnConfig = if (DeviceManager.isConnectedToServer) {
+      DeviceManager.serverConnectionConfig
+    } else {
+      DeviceManager.getLastServerConnectionConfig()
+    }
 
-    if (!DeviceManager.isConnectedToServer || !DeviceManager.checkConnectivity(ctx) || serverConnConfig == null || serverConnConfig.id !== serverConfigIdUsed) {
-      podcastEpisodeLibraryItemMap = mutableMapOf()
-      serverLibraries = listOf()
-      serverLibraryItems = mutableListOf()
-      cachedLibraryAuthors = hashMapOf()
-      cachedLibraryAuthorItems = hashMapOf()
-      cachedLibraryAuthorSeriesItems = hashMapOf()
-      cachedLibrarySeries = hashMapOf()
-      cachedLibrarySeriesItem = hashMapOf()
-      cachedLibraryCollections = hashMapOf()
-      cachedLibraryRecentShelves = hashMapOf()
-      cachedLibraryDiscovery = hashMapOf()
-      cachedLibraryPodcasts = hashMapOf()
-      isLibraryPodcastsCached = hashMapOf()
-      serverItemsInProgress = listOf()
-      allLibraryPersonalizationsDone = false
-      libraryPersonalizationsDone = 0
+    if (forceReset || !DeviceManager.isConnectedToServer || !DeviceManager.checkConnectivity(ctx) || serverConnConfig == null || serverConnConfig.id != serverConfigIdUsed) {
+      synchronized(cacheLock) {
+        cacheGeneration.incrementAndGet()
+        podcastEpisodeLibraryItemMap.clear()
+        serverLibraries = listOf()
+        serverLibraryItems.clear()
+        serverConfigIdUsed = null
+        serverConnectionLeaseUsed = null
+        serverConfigLastPing = 0L
+        serverUserMediaProgress = mutableListOf()
+        cachedLibraryAuthors.clear()
+        cachedLibraryAuthorItems.clear()
+        cachedLibraryAuthorSeriesItems.clear()
+        cachedLibrarySeries.clear()
+        cachedLibrarySeriesItem.clear()
+        cachedLibraryCollections.clear()
+        cachedLibraryRecentShelves.clear()
+        cachedLibraryDiscovery.clear()
+        cachedLibraryBooks.clear()
+        cachedLibraryPodcasts.clear()
+        isLibraryPodcastsCached.clear()
+        serverItemsInProgress = listOf()
+        allLibraryPersonalizationsDone = false
+        libraryPersonalizationsDone = 0
+      }
       return true
     }
     return false
   }
 
-  private fun loadItemsInProgressForAllLibraries(cb: (List<ItemInProgress>) -> Unit) {
-    if (serverItemsInProgress.isNotEmpty()) {
-      cb(serverItemsInProgress)
+  private fun loadItemsInProgressForAllLibraries(
+    expectedGeneration: Long = cacheGeneration.get(),
+    cb: (List<ItemInProgress>) -> Unit
+  ) {
+    val cachedItems = synchronized(cacheLock) {
+      if (expectedGeneration == cacheGeneration.get()) serverItemsInProgress else emptyList()
+    }
+    if (cachedItems.isNotEmpty()) {
+      cb(cachedItems)
     } else {
       apiHandler.getAllItemsInProgress { itemsInProgress ->
-        serverItemsInProgress = itemsInProgress.filter {
-          val libraryItem = it.libraryItemWrapper as LibraryItem
-          libraryItem.checkHasTracks()
+        val filteredItems = itemsInProgress.filter {
+          (it.libraryItemWrapper as? LibraryItem)?.checkHasTracks() == true
         }
-        cb(serverItemsInProgress)
+        val committedItems = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get()) {
+            emptyList()
+          } else {
+            serverItemsInProgress = filteredItems
+            serverItemsInProgress
+          }
+        }
+        cb(committedItems)
       }
     }
   }
@@ -178,15 +249,32 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * [cb] resolves when all libraries are processed
    */
   fun populatePersonalizedDataForAllLibraries(cb: () -> Unit) {
-    val remaining = AtomicInteger(serverLibraries.size)
+    val expectedGeneration = cacheGeneration.get()
+    val libraries = synchronized(cacheLock) {
+      if (expectedGeneration == cacheGeneration.get()) serverLibraries else emptyList()
+    }
+    val remaining = AtomicInteger(libraries.size)
+    if (remaining.get() == 0) {
+      cb()
+      return
+    }
 
-    serverLibraries.forEach { lib ->
+    libraries.forEach { lib ->
       Log.d(tag, "Loading personalization for library ${lib.name}")
-      populatePersonalizedDataForLibrary(lib.id) {
+      populatePersonalizedDataForLibrary(lib.id, expectedGeneration) {
         Log.d(tag, "Loaded personalization for library ${lib.name}")
         if (remaining.decrementAndGet() == 0) {
-          Log.d(tag, "Finished loading all library personalization data")
-          allLibraryPersonalizationsDone = true
+          val committed = synchronized(cacheLock) {
+            if (expectedGeneration != cacheGeneration.get()) {
+              false
+            } else {
+              allLibraryPersonalizationsDone = true
+              true
+            }
+          }
+          if (committed) {
+            Log.d(tag, "Finished loading all library personalization data")
+          }
           cb()
         }
       }
@@ -197,87 +285,109 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * Get personalized shelves from server for selected [libraryId].
    * Populates [cachedLibraryRecentShelves] and [cachedLibraryDiscovery].
    */
-  private fun populatePersonalizedDataForLibrary(libraryId: String, cb: () -> Unit) {
+  private fun populatePersonalizedDataForLibrary(
+    libraryId: String,
+    expectedGeneration: Long = cacheGeneration.get(),
+    cb: () -> Unit
+  ) {
     apiHandler.getLibraryPersonalized(libraryId) { shelves ->
       Log.d(tag, "populatePersonalizedDataForLibrary $libraryId")
-      if (shelves === null) return@getLibraryPersonalized
-      shelves.map { shelf ->
-        Log.d(tag, "$shelf")
-        if (shelf.type == "book") {
-          if (shelf.id == "continue-listening") return@map
-          else if (shelf.id == "listen-again") return@map
-          else if (shelf.id == "recently-added") {
-            if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
-              cachedLibraryRecentShelves[libraryId] = mutableListOf()
-            }
-            if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
-              cachedLibraryRecentShelves[libraryId]!!.add(shelf)
-            }
-          }
-          else if (shelf.id == "discover") {
-            if (!cachedLibraryDiscovery.containsKey(libraryId)) {
-              cachedLibraryDiscovery[libraryId] = mutableListOf()
-            }
-            (shelf as LibraryShelfBookEntity).entities?.map {
-              cachedLibraryDiscovery[libraryId]!!.add(it)
-            }
-          }
-          else if (shelf.id == "continue-reading") return@map
-          else if (shelf.id == "continue-series") return@map
-          shelf as LibraryShelfBookEntity
-        } else if (shelf.type == "series") {
-          if (shelf.id == "recent-series") {
-            if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
-              cachedLibraryRecentShelves[libraryId] = mutableListOf()
-            }
-            if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
-              cachedLibraryRecentShelves[libraryId]!!.add(shelf)
-            }
-          }
-        } else if (shelf.type == "episode") {
-          if (shelf.id == "continue-listening") return@map
-          else if (shelf.id == "listen-again") return@map
-          else if (shelf.id == "newest-episodes") {
-            if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
-              cachedLibraryRecentShelves[libraryId] = mutableListOf()
-            }
-            if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
-              cachedLibraryRecentShelves[libraryId]!!.add(shelf)
-            }
+      if (shelves === null) {
+        cb()
+        return@getLibraryPersonalized
+      }
+      val podcastItemsToLoad = mutableSetOf<Pair<String, String>>()
+      val accepted = synchronized(cacheLock) {
+        if (expectedGeneration != cacheGeneration.get()) {
+          false
+        } else {
+          shelves.forEach shelfLoop@ { shelf ->
+            Log.d(tag, "$shelf")
+            if (shelf.type == "book") {
+              val bookShelf = shelf as LibraryShelfBookEntity
+              // Every book exposed by a personalized shelf must also be resolvable
+              // when Car Media later sends its mediaId to the active session callback.
+              bookShelf.entities
+                .orEmpty()
+                .filter { item -> item.checkHasTracks() }
+                .forEach { item -> addServerLibrary(item) }
 
-            val podcastLibraryItemIds = mutableListOf<String>()
-            (shelf as LibraryShelfEpisodeEntity).entities?.forEach { libraryItem ->
-              if (!podcastLibraryItemIds.contains(libraryItem.id)) {
-                podcastLibraryItemIds.add(libraryItem.id)
-                loadPodcastItem(libraryItem.libraryId, libraryItem.id) {}
+              if (shelf.id == "continue-listening") return@shelfLoop
+              else if (shelf.id == "listen-again") return@shelfLoop
+              else if (shelf.id == "recently-added") {
+                if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
+                  cachedLibraryRecentShelves[libraryId] = mutableListOf()
+                }
+                if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
+                  cachedLibraryRecentShelves[libraryId]!!.add(shelf)
+                }
+              }
+              else if (shelf.id == "discover") {
+                if (!cachedLibraryDiscovery.containsKey(libraryId)) {
+                  cachedLibraryDiscovery[libraryId] = mutableListOf()
+                }
+                bookShelf.entities?.forEach {
+                  cachedLibraryDiscovery[libraryId]!!.add(it)
+                }
+              }
+              else if (shelf.id == "continue-reading") return@shelfLoop
+              else if (shelf.id == "continue-series") return@shelfLoop
+            } else if (shelf.type == "series") {
+              if (shelf.id == "recent-series") {
+                if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
+                  cachedLibraryRecentShelves[libraryId] = mutableListOf()
+                }
+                if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
+                  cachedLibraryRecentShelves[libraryId]!!.add(shelf)
+                }
+              }
+            } else if (shelf.type == "episode") {
+              if (shelf.id == "continue-listening") return@shelfLoop
+              else if (shelf.id == "listen-again") return@shelfLoop
+              else if (shelf.id == "newest-episodes") {
+                if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
+                  cachedLibraryRecentShelves[libraryId] = mutableListOf()
+                }
+                if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
+                  cachedLibraryRecentShelves[libraryId]!!.add(shelf)
+                }
+
+                (shelf as LibraryShelfEpisodeEntity).entities?.forEach { libraryItem ->
+                  podcastItemsToLoad.add(Pair(libraryItem.libraryId, libraryItem.id))
+                }
+              }
+            } else if (shelf.type == "podcast") {
+              if (shelf.id == "recently-added"){
+                if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
+                  cachedLibraryRecentShelves[libraryId] = mutableListOf()
+                }
+                if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
+                  cachedLibraryRecentShelves[libraryId]!!.add(shelf)
+                }
+              }
+              else if (shelf.id == "discover"){
+                return@shelfLoop
+              }
+            } else if (shelf.type =="authors") {
+              if (shelf.id == "newest-authors") {
+                if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
+                  cachedLibraryRecentShelves[libraryId] = mutableListOf()
+                }
+                if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
+                  cachedLibraryRecentShelves[libraryId]!!.add(shelf)
+                }
               }
             }
           }
-        } else if (shelf.type == "podcast") {
-          if (shelf.id == "recently-added"){
-            if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
-              cachedLibraryRecentShelves[libraryId] = mutableListOf()
-            }
-            if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
-              cachedLibraryRecentShelves[libraryId]!!.add(shelf)
-            }
-          }
-          else if (shelf.id == "discover"){
-            return@map
-          }
-        } else if (shelf.type =="authors") {
-          if (shelf.id == "newest-authors") {
-            if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
-              cachedLibraryRecentShelves[libraryId] = mutableListOf()
-            }
-            if (cachedLibraryRecentShelves[libraryId]?.find { it.id == shelf.id } == null) {
-              cachedLibraryRecentShelves[libraryId]!!.add(shelf)
-            }
-          }
+          true
         }
-
       }
-      Log.d(tag, "populatePersonalizedDataForLibrary $libraryId DONE")
+      if (accepted) {
+        podcastItemsToLoad.forEach { (podcastLibraryId, podcastItemId) ->
+          loadPodcastItem(podcastLibraryId, podcastItemId, expectedGeneration) {}
+        }
+        Log.d(tag, "populatePersonalizedDataForLibrary $libraryId DONE")
+      }
       cb()
     }
   }
@@ -287,49 +397,65 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache it is loaded from server
    */
   fun loadLibraryBooksWithAudio(libraryId: String, cb: (List<LibraryItem>) -> Unit) {
-    if (cachedLibraryBooks.containsKey(libraryId)) {
-      cb(cachedLibraryBooks[libraryId]!!)
+    val expectedGeneration = cacheGeneration.get()
+    val cached = cachedLibraryBooks[libraryId]
+    if (cached != null) {
+      cb(cached)
     } else {
       apiHandler.getLibraryItems(libraryId) { libraryItems ->
         val items = libraryItems.filter { it.checkHasTracks() }
             .sortedBy { it.title?.lowercase() }
-        cachedLibraryBooks[libraryId] = items
-        items.forEach { libraryItem ->
-          if (serverLibraryItems.find { it.id == libraryItem.id } == null) {
-            serverLibraryItems.add(libraryItem)
+        val committed = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get()) emptyList()
+          else items.also { current ->
+            cachedLibraryBooks[libraryId] = current
+            current.forEach(::addServerLibrary)
           }
         }
-        cb(items)
+        cb(committed)
       }
     }
   }
 
   fun loadLibraryPodcasts(libraryId:String, cb: (List<LibraryItem>?) -> Unit) {
+    val expectedGeneration = cacheGeneration.get()
     // Without this there is possibility that only recent podcasts get loaded
     // Loading recent podcasts will also create cachedLibraryPodcasts entry for library
     if (!isLibraryPodcastsCached.containsKey(libraryId)) {
       isLibraryPodcastsCached[libraryId] = false
     }
     // Ensure that there is map for library
-    if (!cachedLibraryPodcasts.containsKey(libraryId)) {
-      cachedLibraryPodcasts[libraryId] = mutableMapOf()
-    }
+    cachedLibraryPodcasts.putIfAbsent(libraryId, ConcurrentHashMap())
     if (isLibraryPodcastsCached.getOrElse(libraryId) {false}) {
       Log.d(tag, "loadLibraryPodcasts: Found from cache: $libraryId")
-      cb(cachedLibraryPodcasts[libraryId]?.values?.sortedBy { libraryItem -> (libraryItem.media as Podcast).metadata.title })
+      cb(cachedLibraryPodcasts[libraryId]?.values
+        ?.filter { it.media is Podcast }
+        ?.sortedBy { libraryItem ->
+          ((libraryItem.media as? Podcast)?.metadata?.title).orEmpty()
+        })
     } else {
       apiHandler.getLibraryItems(libraryId) { libraryItems ->
-        val libraryItemsWithAudio = libraryItems.filter { li -> li.checkHasTracks() }
+        val libraryItemsWithAudio = libraryItems.filter { li ->
+          li.media is Podcast && li.checkHasTracks()
+        }
 
-        libraryItemsWithAudio.forEach { libraryItem ->
-          cachedLibraryPodcasts[libraryId]?.set(libraryItem.id, libraryItem)
-          if (serverLibraryItems.find { li -> li.id == libraryItem.id } == null) {
-            serverLibraryItems.add(libraryItem)
+        val committed = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get()) {
+            emptyList()
+          } else {
+            val podcastCache = cachedLibraryPodcasts.getOrPut(libraryId) { ConcurrentHashMap() }
+            libraryItemsWithAudio.forEach { libraryItem ->
+              podcastCache[libraryItem.id] = libraryItem
+              addServerLibrary(libraryItem)
+            }
+            isLibraryPodcastsCached[libraryId] = true
+            libraryItemsWithAudio.sortedBy { libraryItem ->
+              ((libraryItem.media as? Podcast)?.metadata?.title).orEmpty()
+            }
           }
         }
-        isLibraryPodcastsCached[libraryId] = true
         Log.d(tag, "loadLibraryPodcasts: loaded from server: $libraryId")
-        cb(libraryItemsWithAudio.sortedBy { libraryItem -> (libraryItem.media as Podcast).metadata.title })
+        cb(committed)
       }
     }
   }
@@ -339,18 +465,23 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    *  If data is not found from local cache then it will be fetched from server
    */
   fun loadLibrarySeriesWithAudio(libraryId:String, cb: (List<LibrarySeriesItem>) -> Unit) {
+    val expectedGeneration = cacheGeneration.get()
     // Check "cache" first
-    if (cachedLibrarySeries.containsKey(libraryId)) {
+    val cached = cachedLibrarySeries[libraryId]
+    if (cached != null) {
       Log.d(tag, "Series with audio found from cache | Library $libraryId ")
-      cb(cachedLibrarySeries[libraryId] as List<LibrarySeriesItem>)
+      cb(cached)
     } else {
       apiHandler.getLibrarySeries(libraryId) { seriesItems ->
         Log.d(tag, "Series with audio loaded from server | Library $libraryId")
         val seriesItemsWithAudio = seriesItems.filter { si -> si.audiobookCount > 0 }
 
-        cachedLibrarySeries[libraryId] = seriesItemsWithAudio
+        val committed = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get()) emptyList()
+          else seriesItemsWithAudio.also { cachedLibrarySeries[libraryId] = it }
+        }
 
-        cb(seriesItemsWithAudio)
+        cb(committed)
       }
     }
   }
@@ -360,14 +491,10 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadLibrarySeriesWithAudio(libraryId:String, seriesFilter:String, cb: (List<LibrarySeriesItem>) -> Unit) {
-    // Check "cache" first
-    if (!cachedLibrarySeries.containsKey(libraryId)) {
-      loadLibrarySeriesWithAudio(libraryId) {}
-    } else {
-      Log.d(tag, "Series with audio found from cache | Library $libraryId ")
+    loadLibrarySeriesWithAudio(libraryId) { seriesItems ->
+      val normalizedFilter = seriesFilter.uppercase()
+      cb(seriesItems.filter { series -> series.title.uppercase().startsWith(normalizedFilter) })
     }
-    val seriesWithBooks = cachedLibrarySeries[libraryId]!!.filter { ls -> ls.title.uppercase().startsWith(seriesFilter) }.toList()
-    cb(seriesWithBooks)
   }
 
   /**
@@ -386,27 +513,27 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadLibrarySeriesItemsWithAudio(libraryId:String, seriesId:String, cb: (List<LibraryItem>) -> Unit) {
+    val expectedGeneration = cacheGeneration.get()
     // Check "cache" first
-    if (!cachedLibrarySeriesItem.containsKey(libraryId)) {
-      cachedLibrarySeriesItem[libraryId] = hashMapOf()
-    }
-    if (cachedLibrarySeriesItem[libraryId]!!.containsKey(seriesId)) {
+    val libraryCache = cachedLibrarySeriesItem.getOrPut(libraryId) { ConcurrentHashMap() }
+    val cached = libraryCache[seriesId]
+    if (cached != null) {
       Log.d(tag, "Items for series $seriesId found from cache | Library $libraryId")
-      cachedLibrarySeriesItem[libraryId]!![seriesId]?.let { cb(it) }
+      cb(cached)
     } else {
       apiHandler.getLibrarySeriesItems(libraryId, seriesId) { libraryItems ->
         Log.d(tag, "Items for series $seriesId loaded from server | Library $libraryId")
         val libraryItemsWithAudio = libraryItems.filter { li -> li.checkHasTracks() }
 
         val sortedLibraryItemsWithAudio = sortSeriesBooks(libraryItemsWithAudio)
-        cachedLibrarySeriesItem[libraryId]!![seriesId] = sortedLibraryItemsWithAudio
-
-        sortedLibraryItemsWithAudio.forEach { libraryItem ->
-          if (serverLibraryItems.find { li -> li.id == libraryItem.id } == null) {
-            serverLibraryItems.add(libraryItem)
+        val committed = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get()) emptyList()
+          else sortedLibraryItemsWithAudio.also { current ->
+            cachedLibrarySeriesItem.getOrPut(libraryId) { ConcurrentHashMap() }[seriesId] = current
+            current.forEach(::addServerLibrary)
           }
         }
-        cb(sortedLibraryItemsWithAudio)
+        cb(committed)
       }
     }
   }
@@ -416,26 +543,28 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadAuthorsWithBooks(libraryId:String, cb: (List<LibraryAuthorItem>) -> Unit) {
+    val expectedGeneration = cacheGeneration.get()
     // Check "cache" first
-    if (cachedLibraryAuthors.containsKey(libraryId)) {
+    val cached = cachedLibraryAuthors[libraryId]
+    if (cached != null) {
       Log.d(tag, "Authors with books found from cache | Library $libraryId ")
-      cb(cachedLibraryAuthors[libraryId]!!.values.toList())
+      cb(cached.values.toList())
     } else {
       // Fetch data from server and add it to local "cache"
       apiHandler.getLibraryAuthors(libraryId) { authorItems ->
         Log.d(tag, "Authors with books loaded from server | Library $libraryId ")
         // TO-DO: This check won't ensure that there is audiobooks. Current API won't offer ability to do so
-        var authorItemsWithBooks = authorItems.filter { li -> li.bookCount != null && li.bookCount!! > 0 }
+        var authorItemsWithBooks = authorItems.filter { it.bookCount > 0 }
         authorItemsWithBooks = authorItemsWithBooks.sortedBy { it.name }
-        // Ensure that there is map for library
-        cachedLibraryAuthors[libraryId] = mutableMapOf()
-        // Cache authors
-        authorItemsWithBooks.forEach {
-          if (!cachedLibraryAuthors[libraryId]!!.containsKey(it.id)) {
-            cachedLibraryAuthors[libraryId]!![it.id] = it
+        val committed = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get()) emptyList()
+          else authorItemsWithBooks.also { current ->
+            val authorCache = ConcurrentHashMap<String, LibraryAuthorItem>()
+            current.forEach { authorCache.putIfAbsent(it.id, it) }
+            cachedLibraryAuthors[libraryId] = authorCache
           }
         }
-        cb(authorItemsWithBooks)
+        cb(committed)
       }
     }
   }
@@ -445,14 +574,10 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadAuthorsWithBooks(libraryId:String, authorFilter: String, cb: (List<LibraryAuthorItem>) -> Unit) {
-    // Check "cache" first
-    if (cachedLibraryAuthors.containsKey(libraryId)) {
-      Log.d(tag, "Authors with books found from cache | Library $libraryId ")
-    } else {
-      loadAuthorsWithBooks(libraryId) {}
+    loadAuthorsWithBooks(libraryId) { authorItems ->
+      val normalizedFilter = authorFilter.uppercase()
+      cb(authorItems.filter { author -> author.name.uppercase().startsWith(normalizedFilter) })
     }
-    val authorsWithBooks = cachedLibraryAuthors[libraryId]!!.values.filter { lai -> lai.name.uppercase().startsWith(authorFilter) }.toList()
-    cb(authorsWithBooks)
   }
 
   /**
@@ -460,28 +585,28 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadAuthorBooksWithAudio(libraryId:String, authorId:String, cb: (List<LibraryItem>) -> Unit) {
+    val expectedGeneration = cacheGeneration.get()
     // Ensure that there is map for library
-    if (!cachedLibraryAuthorItems.containsKey(libraryId)) {
-        cachedLibraryAuthorItems[libraryId] = mutableMapOf()
-    }
+    val libraryCache = cachedLibraryAuthorItems.getOrPut(libraryId) { ConcurrentHashMap() }
     // Check "cache" first
-    if (cachedLibraryAuthorItems[libraryId]!!.containsKey(authorId)) {
+    val cached = libraryCache[authorId]
+    if (cached != null) {
       Log.d(tag, "Items for author $authorId found from cache | Library $libraryId")
-      cachedLibraryAuthorItems[libraryId]!![authorId]?.let { cb(it) }
+      cb(cached)
     } else {
       apiHandler.getLibraryItemsFromAuthor(libraryId, authorId) { libraryItems ->
         Log.d(tag, "Items for author $authorId loaded from server | Library $libraryId")
         val libraryItemsWithAudio = libraryItems.filter { li -> li.checkHasTracks() }
 
-        cachedLibraryAuthorItems[libraryId]!![authorId]  = libraryItemsWithAudio
-
-        libraryItemsWithAudio.forEach { libraryItem ->
-          if (serverLibraryItems.find { li -> li.id == libraryItem.id } == null) {
-            serverLibraryItems.add(libraryItem)
+        val committed = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get()) emptyList()
+          else libraryItemsWithAudio.also { current ->
+            cachedLibraryAuthorItems.getOrPut(libraryId) { ConcurrentHashMap() }[authorId] = current
+            current.forEach(::addServerLibrary)
           }
         }
 
-        cb(libraryItemsWithAudio)
+        cb(committed)
       }
     }
   }
@@ -491,36 +616,44 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadAuthorSeriesBooksWithAudio(libraryId:String, authorId:String, seriesId: String, cb: (List<LibraryItem>) -> Unit) {
+    val expectedGeneration = cacheGeneration.get()
     val authorSeriesKey = "$authorId|$seriesId"
-    // Ensure that there is map for library
-    if (!cachedLibraryAuthorSeriesItems.containsKey(libraryId)) {
-      cachedLibraryAuthorSeriesItems[libraryId] = mutableMapOf()
-    }
+    val libraryCache = cachedLibraryAuthorSeriesItems.getOrPut(libraryId) { ConcurrentHashMap() }
     // Check "cache" first
-    if (cachedLibraryAuthorSeriesItems[libraryId]!!.containsKey(authorSeriesKey)) {
+    val cached = libraryCache[authorSeriesKey]
+    if (cached != null) {
       Log.d(tag, "Items for series $seriesId with author $authorId found from cache | Library $libraryId")
-      cachedLibraryAuthorSeriesItems[libraryId]!![authorSeriesKey]?.let { cb(it) }
+      cb(cached)
     } else {
-      apiHandler.getLibrarySeriesItems(libraryId, seriesId) { libraryItems ->
-        Log.d(tag, "Items for series $seriesId with author $authorId loaded from server | Library $libraryId")
-        val libraryItemsWithAudio = libraryItems.filter { li -> li.checkHasTracks() }
-        if (!cachedLibraryAuthors[libraryId]!!.containsKey(authorId)) {
-          Log.d(tag, "Author data is missing")
+      loadAuthorsWithBooks(libraryId) { authorItems ->
+        val authorName = authorItems.find { author -> author.id == authorId }?.name
+        if (authorName == null) {
+          Log.w(tag, "Author is missing from the selected library")
+          cb(emptyList())
+          return@loadAuthorsWithBooks
         }
-        val authorName = cachedLibraryAuthors[libraryId]!![authorId]?.name ?: ""
-        Log.d(tag, "Using author name: $authorName")
-        val libraryItemsFromAuthorWithAudio = libraryItemsWithAudio.filter { li -> li.authorName.indexOf(authorName, ignoreCase = true) >= 0 }
 
-        val sortedLibraryItemsWithAudio = sortSeriesBooks(libraryItemsFromAuthorWithAudio)
-        cachedLibraryAuthorSeriesItems[libraryId]!![authorId] = sortedLibraryItemsWithAudio
-
-        sortedLibraryItemsWithAudio.forEach { libraryItem ->
-          if (serverLibraryItems.find { li -> li.id == libraryItem.id } == null) {
-            serverLibraryItems.add(libraryItem)
+        apiHandler.getLibrarySeriesItems(libraryId, seriesId) { libraryItems ->
+          if (expectedGeneration != cacheGeneration.get()) {
+            cb(emptyList())
+            return@getLibrarySeriesItems
           }
-        }
+          Log.d(tag, "Items for series $seriesId with author $authorId loaded from server | Library $libraryId")
+          val libraryItemsFromAuthorWithAudio = libraryItems
+            .filter { item -> item.checkHasTracks() }
+            .filter { item -> item.authorName.contains(authorName, ignoreCase = true) }
 
-        cb(sortedLibraryItemsWithAudio)
+          val sortedLibraryItemsWithAudio = sortSeriesBooks(libraryItemsFromAuthorWithAudio)
+          val committed = synchronized(cacheLock) {
+            if (expectedGeneration != cacheGeneration.get()) emptyList()
+            else sortedLibraryItemsWithAudio.also { current ->
+              cachedLibraryAuthorSeriesItems
+                .getOrPut(libraryId) { ConcurrentHashMap() }[authorSeriesKey] = current
+              current.forEach(::addServerLibrary)
+            }
+          }
+          cb(committed)
+        }
       }
     }
   }
@@ -530,22 +663,25 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadLibraryCollectionsWithAudio(libraryId:String, cb: (List<LibraryCollection>) -> Unit) {
-    if (cachedLibraryCollections.containsKey(libraryId)) {
+    val expectedGeneration = cacheGeneration.get()
+    val cached = cachedLibraryCollections[libraryId]
+    if (cached != null) {
       Log.d(tag, "Collections with books found from cache | Library $libraryId ")
-      cb(cachedLibraryCollections[libraryId]!!.values.toList())
+      cb(cached.values.toList())
     } else {
       apiHandler.getLibraryCollections(libraryId) { libraryCollections ->
         Log.d(tag, "Collections with books loaded from server | Library $libraryId ")
         val libraryCollectionsWithAudio = libraryCollections.filter { lc -> lc.audiobookCount > 0 }
 
-        // Cache collections
-        cachedLibraryCollections[libraryId] = hashMapOf()
-        libraryCollectionsWithAudio.forEach {
-          if (!cachedLibraryCollections[libraryId]!!.containsKey(it.id)) {
-            cachedLibraryCollections[libraryId]!![it.id] = it
+        val committed = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get()) emptyList()
+          else libraryCollectionsWithAudio.also { current ->
+            val collectionCache = ConcurrentHashMap<String, LibraryCollection>()
+            current.forEach { collectionCache.putIfAbsent(it.id, it) }
+            cachedLibraryCollections[libraryId] = collectionCache
           }
         }
-        cb(libraryCollectionsWithAudio)
+        cb(committed)
       }
     }
   }
@@ -555,18 +691,15 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadLibraryCollectionBooksWithAudio(libraryId: String, collectionId: String, cb: (List<LibraryItem>) -> Unit) {
-    if (!cachedLibraryCollections.containsKey(libraryId)) {
-      loadLibraryCollectionsWithAudio(libraryId) {}
-    }
-    Log.d(tag, "Trying to find collection $collectionId items from from cache | Library $libraryId ")
-    if ( cachedLibraryCollections[libraryId]!!.containsKey(collectionId)) {
-      val libraryCollectionBookswithAudio = cachedLibraryCollections[libraryId]!![collectionId]?.books
-      libraryCollectionBookswithAudio?.forEach { libraryItem ->
-        if (serverLibraryItems.find { li -> li.id == libraryItem.id } == null) {
-          serverLibraryItems.add(libraryItem)
-        }
-      }
-      cb(libraryCollectionBookswithAudio as List<LibraryItem>)
+    loadLibraryCollectionsWithAudio(libraryId) {
+      Log.d(tag, "Trying to find collection $collectionId items from cache | Library $libraryId")
+      val books = cachedLibraryCollections[libraryId]
+        ?.get(collectionId)
+        ?.books
+        .orEmpty()
+        .filter { item -> item.checkHasTracks() }
+      books.forEach { libraryItem -> addServerLibrary(libraryItem) }
+      cb(books)
     }
   }
 
@@ -575,12 +708,11 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not found from local cache then it will be fetched from server
    */
   fun loadLibraryDiscoveryBooksWithAudio(libraryId: String, cb: (List<LibraryItem>) -> Unit) {
-    if (!cachedLibraryDiscovery.containsKey(libraryId)) {
-      cb(listOf())
-    }
-    val libraryItemsWithAudio = cachedLibraryDiscovery[libraryId]?.filter { li -> li.checkHasTracks() }
-    libraryItemsWithAudio?.forEach { libraryItem -> addServerLibrary(libraryItem) }
-    cb(libraryItemsWithAudio as List<LibraryItem>)
+    val libraryItemsWithAudio = synchronized(cacheLock) {
+      cachedLibraryDiscovery[libraryId].orEmpty().toList()
+    }.filter { item -> item.checkHasTracks() }
+    libraryItemsWithAudio.forEach { libraryItem -> addServerLibrary(libraryItem) }
+    cb(libraryItemsWithAudio)
   }
 
   /**
@@ -588,12 +720,15 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * If data is not shelves are found returns empty list
    */
   fun getLibraryRecentShelfs(libraryId: String, cb: (List<LibraryShelfType>) -> Unit) {
-    if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
+    val shelves = synchronized(cacheLock) {
+      cachedLibraryRecentShelves[libraryId]?.toList()
+    }
+    if (shelves == null) {
       Log.d(tag, "getLibraryRecentShelfs: No shelves $libraryId")
       cb(listOf())
       return
     }
-    cb(cachedLibraryRecentShelves[libraryId] as List<LibraryShelfType>)
+    cb(shelves)
   }
 
   /**
@@ -602,11 +737,14 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    */
   fun getLibraryRecentShelfByType(libraryId: String, type:String, cb: (LibraryShelfType?) -> Unit) {
     Log.d(tag, "getLibraryRecentShelfByType: $libraryId | $type")
-    if (!cachedLibraryRecentShelves.containsKey(libraryId)) {
+    val shelves = synchronized(cacheLock) {
+      cachedLibraryRecentShelves[libraryId]?.toList()
+    }
+    if (shelves == null) {
       cb(null)
       return
     }
-    for (shelf in cachedLibraryRecentShelves[libraryId]!!) {
+    for (shelf in shelves) {
       if (shelf.type == type.lowercase()) {
         cb(shelf)
         return
@@ -618,26 +756,45 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
   /**
    * Loads podcasts for newest episodes shelf
    */
-  private fun loadPodcastItem(libraryId: String, libraryItemId: String, cb: (LibraryItem?) -> Unit) {
-    // Ensure that there is map for library
-    if (!cachedLibraryPodcasts.containsKey(libraryId)) {
-      cachedLibraryPodcasts[libraryId] = mutableMapOf()
+  private fun loadPodcastItem(
+    libraryId: String,
+    libraryItemId: String,
+    expectedGeneration: Long = cacheGeneration.get(),
+    cb: (LibraryItem?) -> Unit
+  ) {
+    val cachedPodcast = synchronized(cacheLock) {
+      if (expectedGeneration != cacheGeneration.get()) {
+        null
+      } else {
+        cachedLibraryPodcasts.getOrPut(libraryId) { mutableMapOf() }[libraryItemId]
+      }
     }
-    if (cachedLibraryPodcasts[libraryId]!!.containsKey(libraryItemId)) {
+    if (cachedPodcast != null) {
       Log.d(tag, "loadPodcastItem: Podcast found from cache | Library $libraryItemId ")
-      cb(cachedLibraryPodcasts[libraryId]?.get(libraryItemId))
+      cb(cachedPodcast)
     } else {
+      if (expectedGeneration != cacheGeneration.get()) {
+        cb(null)
+        return
+      }
       Log.d(tag, "loadPodcastItem: Calling getLibraryItem $libraryItemId")
       apiHandler.getLibraryItem(libraryItemId) { libraryItem ->
-        if (libraryItem !== null) {
-          Log.d(tag, "loadPodcastItem: Got library item ${libraryItem.id} ${libraryItem.media.metadata.title}")
-          val podcast = libraryItem.media as Podcast
-          podcast.episodes?.forEach { podcastEpisode ->
-            podcastEpisodeLibraryItemMap[podcastEpisode.id] = LibraryItemWithEpisode(libraryItem, podcastEpisode)
+        val committedPodcast = synchronized(cacheLock) {
+          if (expectedGeneration != cacheGeneration.get() || libraryItem == null) {
+            null
+          } else {
+            val podcast = libraryItem.media as? Podcast ?: return@synchronized null
+            podcast.episodes?.forEach { podcastEpisode ->
+              podcastEpisodeLibraryItemMap[podcastEpisode.id] = LibraryItemWithEpisode(libraryItem, podcastEpisode)
+            }
+            cachedLibraryPodcasts.getOrPut(libraryId) { mutableMapOf() }[libraryItemId] = libraryItem
+            libraryItem
           }
-          cachedLibraryPodcasts[libraryId]?.set(libraryItemId, libraryItem)
-          cb(libraryItem)
         }
+        if (committedPodcast != null) {
+          Log.d(tag, "loadPodcastItem: Got library item ${committedPodcast.id} ${committedPodcast.media.metadata.title}")
+        }
+        cb(committedPodcast)
       }
     }
   }
@@ -658,12 +815,21 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
       loadLibraryItem(libraryItemId) { libraryItemWrapper ->
         Log.d(tag, "Loaded Podcast library item $libraryItemWrapper")
 
-        libraryItemWrapper?.let {
+        if (libraryItemWrapper == null) {
+          cb(mutableListOf())
+          return@loadLibraryItem
+        }
+
+        libraryItemWrapper.let {
           if (libraryItemWrapper is LocalLibraryItem) { // Local podcast episodes
             if (libraryItemWrapper.mediaType != "podcast" || libraryItemWrapper.media.getAudioTracks().isEmpty()) {
               cb(mutableListOf())
             } else {
-              val podcast = libraryItemWrapper.media as Podcast
+              val podcast = libraryItemWrapper.media as? Podcast
+              if (podcast == null) {
+                cb(mutableListOf())
+                return@loadLibraryItem
+              }
               selectedLibraryItemId = libraryItemWrapper.id
               selectedPodcast = podcast
 
@@ -681,7 +847,11 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
             if (libraryItemWrapper.mediaType != "podcast" || libraryItemWrapper.media.getAudioTracks().isEmpty()) {
               cb(mutableListOf())
             } else {
-              val podcast = libraryItemWrapper.media as Podcast
+              val podcast = libraryItemWrapper.media as? Podcast
+              if (podcast == null) {
+                cb(mutableListOf())
+                return@loadLibraryItem
+              }
               podcast.episodes?.forEach { podcastEpisode ->
                 podcastEpisodeLibraryItemMap[podcastEpisode.id] = LibraryItemWithEpisode(libraryItemWrapper, podcastEpisode)
               }
@@ -693,9 +863,9 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
                 val progress = serverUserMediaProgress.find { it.libraryItemId == libraryItemWrapper.id && it.episodeId == podcastEpisode.id }
 
                 // to show download icon
-                val localLibraryItem = DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItemWrapper.id)
+                val localLibraryItem = getLocalDownloadForCurrentServer(libraryItemWrapper.id)
                 localLibraryItem?.let { lli ->
-                  val localEpisode = (lli.media as Podcast).episodes?.find { it.serverEpisodeId == podcastEpisode.id }
+                  val localEpisode = (lli.media as? Podcast)?.episodes?.find { it.serverEpisodeId == podcastEpisode.id }
                   podcastEpisode.localEpisodeId = localEpisode?.id
                 }
 
@@ -712,14 +882,28 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
   /**
    * Loads libraries for selected server with stats
    */
-  private fun loadLibraries(cb: (List<Library>) -> Unit) {
-    if (serverLibraries.isNotEmpty()) {
-      cb(serverLibraries)
-    } else {
-      apiHandler.getLibraries { loadedLibraries ->
-        serverLibraries = loadedLibraries
-        cb(serverLibraries)
+  private fun loadLibraries(
+    expectedGeneration: Long,
+    cb: (List<Library>) -> Unit
+  ) {
+    val cachedLibraries = synchronized(cacheLock) {
+      if (expectedGeneration == cacheGeneration.get()) serverLibraries else emptyList()
+    }
+    if (cachedLibraries.isNotEmpty()) {
+      cb(cachedLibraries)
+      return
+    }
+
+    apiHandler.getLibraries { loadedLibraries ->
+      val committedLibraries = synchronized(cacheLock) {
+        if (expectedGeneration != cacheGeneration.get()) {
+          emptyList()
+        } else {
+          serverLibraries = loadedLibraries
+          serverLibraries
+        }
       }
+      cb(committedLibraries)
     }
   }
 
@@ -749,128 +933,208 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
     return mediaProgress
   }
 
-  private fun checkSetValidServerConnectionConfig(cb: (Boolean) -> Unit) = runBlocking {
-    Log.d(tag, "checkSetValidServerConnectionConfig | serverConfigIdUsed=$serverConfigIdUsed | lastServerConnectionConfigId=${DeviceManager.deviceData.lastServerConnectionConfigId}")
+  private fun checkSetValidServerConnectionConfig(
+    expectedGeneration: Long,
+    cb: (Boolean) -> Unit
+  ) = runBlocking {
+    val lastServerConnectionConfig = DeviceManager.getLastServerConnectionConfig()
+    Log.d(tag, "checkSetValidServerConnectionConfig | serverConfigIdUsed=$serverConfigIdUsed | lastServerConnectionConfigId=${lastServerConnectionConfig?.id}")
 
-    coroutineScope {
-      if (!DeviceManager.checkConnectivity(ctx)) {
-        serverUserMediaProgress = mutableListOf()
-        Log.d(tag, "checkSetValidServerConnectionConfig: No connectivity")
-        cb(false)
-      } else if (DeviceManager.deviceData.lastServerConnectionConfigId.isNullOrBlank()) { // If in offline mode last server connection config is unset
-        serverUserMediaProgress = mutableListOf()
-        Log.d(tag, "checkSetValidServerConnectionConfig: No last server connection config")
-        cb(false)
-      } else {
-        var hasValidConn = false
-        var lookupMediaProgress = true
-
-        if (!serverConfigIdUsed.isNullOrEmpty() && serverConfigLastPing > 0L && System.currentTimeMillis() - serverConfigLastPing < 5000) {
-            Log.d(tag, "checkSetValidServerConnectionConfig last ping less than a 5 seconds ago")
-          hasValidConn = true
-          lookupMediaProgress = false
-        } else {
+    if (!DeviceManager.checkConnectivity(ctx) ||
+      lastServerConnectionConfig == null
+    ) {
+      synchronized(cacheLock) {
+        if (expectedGeneration == cacheGeneration.get()) {
           serverUserMediaProgress = mutableListOf()
         }
+      }
+      Log.d(tag, "checkSetValidServerConnectionConfig: No connectivity or saved server")
+      cb(false)
+      return@runBlocking
+    }
 
-        if (!hasValidConn) {
-          // First check if the current selected config is pingable
-          DeviceManager.serverConnectionConfig?.let {
-            hasValidConn = checkServerConnection(it)
-            Log.d(
-              tag,
-              "checkSetValidServerConnectionConfig: Current config ${DeviceManager.serverAddress} is pingable? $hasValidConn"
-            )
-          }
-        }
+    val currentConfigId = DeviceManager.serverConnectionConfig?.id
+      ?: lastServerConnectionConfig.id
+    val canReusePing = synchronized(cacheLock) {
+      expectedGeneration == cacheGeneration.get() &&
+        !serverConfigIdUsed.isNullOrEmpty() &&
+        serverConfigIdUsed == currentConfigId &&
+        serverConfigLastPing > 0L &&
+        System.currentTimeMillis() - serverConfigLastPing < 5000
+    }
+    if (canReusePing) {
+      Log.d(tag, "checkSetValidServerConnectionConfig last ping less than 5 seconds ago")
+      cb(true)
+      return@runBlocking
+    }
 
-        if (!hasValidConn) {
-          // Loop through available configs and check if can connect
-          for (config: ServerConnectionConfig in DeviceManager.deviceData.serverConnectionConfigs) {
-            val result = checkServerConnection(config)
-
-            if (result) {
-              hasValidConn = true
-              DeviceManager.serverConnectionConfig = config
-              Log.d(tag, "checkSetValidServerConnectionConfig: Set server connection config ${DeviceManager.serverConnectionConfigId}")
-              break
-            }
-          }
-        }
-
-        if (hasValidConn) {
-          serverConfigLastPing = System.currentTimeMillis()
-
-          if (lookupMediaProgress) {
-            Log.d(tag, "Has valid conn now get user media progress")
-            DeviceManager.serverConnectionConfig?.let {
-              serverUserMediaProgress = authorize(it)
-            }
-          }
-        }
-
-        cb(hasValidConn)
+    synchronized(cacheLock) {
+      if (expectedGeneration == cacheGeneration.get()) {
+        serverUserMediaProgress = mutableListOf()
       }
     }
 
+    var selectedConfig: ServerConnectionConfig? = DeviceManager.serverConnectionConfig
+      ?: lastServerConnectionConfig
+    var hasValidConnection = false
+    val candidates = orderedServerConnectionCandidates(
+      selectedConfig,
+      DeviceManager.snapshotServerConnectionConfigs()
+    )
+    for (config in candidates) {
+      if (checkServerConnection(config)) {
+        if (DeviceManager.serverConnectionConfig?.id != config.id) {
+          val accepted = synchronized(cacheLock) {
+            if (expectedGeneration != cacheGeneration.get()) {
+              false
+            } else {
+              DeviceManager.trySelectServerConnectionConfig(config)
+            }
+          }
+          if (!accepted) {
+            cb(false)
+            return@runBlocking
+          }
+          selectedConfig = DeviceManager.serverConnectionConfig
+          Log.d(tag, "checkSetValidServerConnectionConfig: Set server connection config ${config.id}")
+        }
+        hasValidConnection = true
+        Log.d(tag, "checkSetValidServerConnectionConfig: Config ${config.address} is pingable")
+        break
+      }
+      if (expectedGeneration != cacheGeneration.get()) {
+        cb(false)
+        return@runBlocking
+      }
+    }
+
+    val configToAuthorize = selectedConfig
+    if (!hasValidConnection || configToAuthorize == null) {
+      cb(false)
+      return@runBlocking
+    }
+
+    Log.d(tag, "Has valid conn now get user media progress")
+    val mediaProgress = authorize(configToAuthorize)
+    val committed = synchronized(cacheLock) {
+      if (expectedGeneration != cacheGeneration.get()) {
+        false
+      } else {
+        serverConfigLastPing = System.currentTimeMillis()
+        serverUserMediaProgress = mediaProgress
+        true
+      }
+    }
+    cb(committed)
   }
 
-  fun loadServerUserMediaProgress(cb: () -> Unit) {
+  fun loadServerUserMediaProgress(
+    config: ServerConnectionConfig? = DeviceManager.serverConnectionConfig,
+    lease: ConnectionLease? = config?.let(DeviceManager::captureConnectionLease),
+    cb: (Boolean) -> Unit
+  ) {
     Log.d(tag, "Loading server media progress")
-    if (DeviceManager.serverConnectionConfig == null) {
-      return cb()
+    val expectedGeneration = cacheGeneration.get()
+    if (config == null || lease == null ||
+      config.id != lease.connectionId ||
+      DeviceManager.getServerConnectionConfig(lease) !== config
+    ) {
+      return cb(false)
     }
 
-    DeviceManager.serverConnectionConfig?.let { config ->
-      apiHandler.authorize(config) {
-        Log.d(tag, "loadServerUserMediaProgress: Authorized server config ${config.address} result = $it")
-        if (!it.isNullOrEmpty()) {
+    apiHandler.authorize(config) {
+      val committed = synchronized(cacheLock) {
+        if (expectedGeneration != cacheGeneration.get() ||
+          DeviceManager.getServerConnectionConfig(lease) !== config ||
+          it == null
+        ) {
+          false
+        } else {
+          // A successful empty response is authoritative and must clear stale
+          // completion data before selecting the next podcast episode.
           serverUserMediaProgress = it
+          true
         }
-        cb()
       }
+      if (committed) {
+        Log.d(tag, "loadServerUserMediaProgress: Authorized server config ${config.address} result = $it")
+      }
+      cb(committed)
     }
   }
 
   fun initializeInProgressItems(cb: () -> Unit) {
     Log.d(tag, "Initializing inprogress items")
+    val expectedGeneration = cacheGeneration.get()
 
-    loadItemsInProgressForAllLibraries { itemsInProgress ->
-      itemsInProgress.forEach {
-        val libraryItem = it.libraryItemWrapper as LibraryItem
-        if (serverLibraryItems.find { li -> li.id == libraryItem.id } == null) {
-          serverLibraryItems.add(libraryItem)
-        }
+    loadItemsInProgressForAllLibraries(expectedGeneration) { itemsInProgress ->
+      val committed = synchronized(cacheLock) {
+        if (expectedGeneration != cacheGeneration.get()) {
+          false
+        } else {
+          itemsInProgress.forEach {
+            val libraryItem = it.libraryItemWrapper as? LibraryItem ?: return@forEach
+            addServerLibrary(libraryItem)
 
-        if (it.episode != null) {
-          podcastEpisodeLibraryItemMap[it.episode.id] = LibraryItemWithEpisode(it.libraryItemWrapper, it.episode)
+            if (it.episode != null) {
+              podcastEpisodeLibraryItemMap[it.episode.id] = LibraryItemWithEpisode(it.libraryItemWrapper, it.episode)
+            }
+          }
+          true
         }
       }
-      Log.d(tag, "Initializing inprogress items done")
+      if (committed) {
+        Log.d(tag, "Initializing inprogress items done")
+      }
       cb()
     }
   }
 
-  fun loadAndroidAutoItems(cb: () -> Unit) {
+  fun loadAndroidAutoItems(cb: (Boolean) -> Unit) {
     Log.d(tag, "Load android auto items")
+    val expectedGeneration = cacheGeneration.get()
 
     // Check if any valid server connection if not use locally downloaded books
-    checkSetValidServerConnectionConfig { isConnected ->
-      if (isConnected) {
-        serverConfigIdUsed = DeviceManager.serverConnectionConfigId
-        Log.d(tag, "loadAndroidAutoItems: Connected to server config id=$serverConfigIdUsed")
-
-        loadLibraries { libraries ->
-          if (libraries.isEmpty()) {
-            Log.w(tag, "No libraries returned from server request")
-            cb()
-          } else {
-            cb() // Fully loaded
-          }
+    checkSetValidServerConnectionConfig(expectedGeneration) { isConnected ->
+      if (!isConnected) {
+        cb(false)
+        return@checkSetValidServerConnectionConfig
+      }
+      val selectedConfig = DeviceManager.serverConnectionConfig
+      val selectedLease = DeviceManager.captureConnectionLease(selectedConfig)
+      if (selectedConfig == null || selectedLease == null) {
+        cb(false)
+        return@checkSetValidServerConnectionConfig
+      }
+      val configId = selectedConfig.id
+      val committedConfig = synchronized(cacheLock) {
+        if (expectedGeneration != cacheGeneration.get() ||
+          DeviceManager.getServerConnectionConfig(selectedLease) !== selectedConfig
+        ) {
+          false
+        } else {
+          serverConfigIdUsed = configId
+          serverConnectionLeaseUsed = selectedLease
+          true
         }
-      } else { // Not connected to server
-        Log.d(tag, "loadAndroidAutoItems: Not connected to server")
-        cb()
+      }
+      if (!committedConfig) {
+        cb(false)
+        return@checkSetValidServerConnectionConfig
+      }
+      Log.d(tag, "loadAndroidAutoItems: Connected to server config id=$configId")
+
+      loadLibraries(expectedGeneration) { libraries ->
+        if (expectedGeneration != cacheGeneration.get()) {
+          cb(false)
+          return@loadLibraries
+        }
+        if (libraries.isEmpty()) {
+          Log.w(tag, "No libraries returned from server request")
+          cb(true)
+        } else {
+          cb(true) // Fully loaded
+        }
       }
     }
   }
@@ -880,8 +1144,13 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
    * Searches from books, series and authors
    */
   suspend fun doSearch(libraryId: String, queryString: String) : Map<String, List<MediaBrowserCompat.MediaItem>> {
+    val expectedGeneration = cacheGeneration.get()
     return suspendCoroutine {
       apiHandler.getSearchResults(libraryId, queryString) { searchResult ->
+        if (expectedGeneration != cacheGeneration.get()) {
+          it.resume(emptyMap())
+          return@getSearchResults
+        }
         Log.d(tag, "searchLocalCache: $searchResult")
         // Nothing found from server
         if (searchResult === null) {
@@ -899,11 +1168,9 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
           val children = searchResult.book!!.filter { it.libraryItem.checkHasTracks() }.map { bookResult ->
             val libraryItem = bookResult.libraryItem
 
-            if (serverLibraryItems.find { li -> li.id == libraryItem.id } == null) {
-              serverLibraryItems.add(libraryItem)
-            }
+            addServerLibrary(libraryItem)
             val progress = serverUserMediaProgress.find { it.libraryItemId == libraryItem.id }
-            val localLibraryItem = DeviceManager.dbManager.getLocalLibraryItemByLId(libraryItem.id)
+            val localLibraryItem = getLocalDownloadForCurrentServer(libraryItem.id)
             libraryItem.localLibraryItemId = localLibraryItem?.id
             val description = libraryItem.getMediaDescription(progress, ctx, null, null, "Books (${serverLibrary?.name})")
             MediaBrowserCompat.MediaItem(description, MediaBrowserCompat.MediaItem.FLAG_PLAYABLE)
@@ -914,7 +1181,7 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
           Log.d(tag, "onSearch: found ${searchResult.series!!.size} series")
           val children = searchResult.series!!.map { seriesResult ->
             val seriesItem = seriesResult.series
-            seriesItem.books = seriesResult.books as MutableList<LibraryItem>
+            seriesItem.books = seriesResult.books.orEmpty().toMutableList()
             val description = seriesItem.getMediaDescription(null, ctx, "Series (${serverLibrary?.name})")
             MediaBrowserCompat.MediaItem(description, MediaBrowserCompat.MediaItem.FLAG_BROWSABLE)
           }
@@ -928,6 +1195,21 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
           }
           foundItems["authors"] = children
         }
+        if (searchResult.podcast !== null && searchResult.podcast!!.isNotEmpty()) {
+          Log.d(tag, "onSearch: found ${searchResult.podcast!!.size} podcasts")
+          val children = searchResult.podcast!!
+            .map { podcastResult -> podcastResult.libraryItem }
+            .filter { libraryItem -> libraryItem.checkHasTracks() }
+            .map { libraryItem ->
+              addServerLibrary(libraryItem)
+              val description = libraryItem.getMediaDescription(null, ctx)
+              MediaBrowserCompat.MediaItem(
+                description,
+                MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
+              )
+            }
+          foundItems["podcast"] = children
+        }
 
         it.resume(foundItems)
       }
@@ -935,19 +1217,30 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
   }
 
   fun getFirstItem() : LibraryItemWrapper? {
-    if (serverLibraryItems.isNotEmpty()) {
-      return serverLibraryItems[0]
-    } else {
-      val localBooks = DeviceManager.dbManager.getLocalLibraryItems("book")
-      return if (localBooks.isNotEmpty()) return localBooks[0] else null
+    val remoteItem = synchronized(cacheLock) {
+      val lease = serverConnectionLeaseUsed
+      if (lease != null && DeviceManager.isConnectionLeaseCurrent(lease)) {
+        serverLibraryItems.values.firstOrNull()
+      } else {
+        null
+      }
     }
+    remoteItem?.let { return it }
+    return DeviceManager.dbManager.getLocalLibraryItems("book").firstOrNull()
   }
 
   fun getPodcastWithEpisodeByEpisodeId(id:String) : LibraryItemWithEpisode? {
     return if (id.startsWith("local")) {
       DeviceManager.dbManager.getLocalLibraryItemWithEpisode(id)
     } else {
-      podcastEpisodeLibraryItemMap[id]
+      synchronized(cacheLock) {
+        val lease = serverConnectionLeaseUsed
+        if (lease != null && DeviceManager.isConnectionLeaseCurrent(lease)) {
+          podcastEpisodeLibraryItemMap[id]
+        } else {
+          null
+        }
+      }
     }
   }
 
@@ -955,23 +1248,265 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
     return if (id.startsWith("local")) {
       DeviceManager.dbManager.getLocalLibraryItem(id)
     } else {
-      serverLibraryItems.find { it.id == id }
+      synchronized(cacheLock) {
+        val lease = serverConnectionLeaseUsed
+        if (lease != null && DeviceManager.isConnectionLeaseCurrent(lease)) {
+          serverLibraryItems[id]
+        } else {
+          null
+        }
+      }
     }
   }
 
   fun getFromSearch(query:String?) : LibraryItemWrapper? {
     if (query.isNullOrEmpty()) return getFirstItem()
-    return serverLibraryItems.find {
+    return serverLibraryItems.values.find {
       it.title.lowercase(Locale.getDefault()).contains(query.lowercase(Locale.getDefault()))
     }
   }
 
-  fun play(libraryItemWrapper:LibraryItemWrapper, episode:PodcastEpisode?, playItemRequestPayload:PlayItemRequestPayload, cb: (PlaybackSession?) -> Unit) {
+  /**
+   * Resolves an Android voice request without assuming the browse cache is warm.
+   *
+   * This is a suspending API because a cold Automotive launch may need to select a
+   * saved server, authorize, load its libraries, and query the search endpoint. The
+   * MediaSession callback always invokes it off the main thread.
+   */
+  internal suspend fun resolveVoiceSearch(request: VoiceSearchRequest): VoiceSearchResult {
+    findCachedVoiceResolution(request)?.let { return VoiceSearchResult.Found(it) }
+
+    val serverAvailable = suspendCoroutine<Boolean> { continuation ->
+      loadAndroidAutoItems { continuation.resume(it) }
+    }
+    if (!serverAvailable) {
+      return findCachedVoiceResolution(request)?.let { VoiceSearchResult.Found(it) }
+        ?: VoiceSearchResult.Unavailable
+    }
+
+    if (request.isGeneralRequest) {
+      // An empty query means "play some media". Prefer the most recently active
+      // audiobook or podcast episode after loading that cold-start data.
+      suspendCoroutine<Unit> { continuation ->
+        initializeInProgressItems { continuation.resume(Unit) }
+      }
+    }
+    findCachedVoiceResolution(request)?.let { return VoiceSearchResult.Found(it) }
+
+    val resolved = if (request.isGeneralRequest) {
+      loadDefaultVoiceResolution()
+    } else {
+      searchServerForVoiceResolution(request)
+    }
+
+    return resolved?.let { VoiceSearchResult.Found(it) } ?: VoiceSearchResult.NoMatch
+  }
+
+  private suspend fun findCachedVoiceResolution(
+    request: VoiceSearchRequest
+  ): VoiceSearchResolution? {
+    if (request.isGeneralRequest) {
+      serverItemsInProgress
+        .sortedByDescending { it.progressLastUpdate }
+        .forEach { inProgress ->
+          playableVoiceResolution(
+            inProgress.libraryItemWrapper,
+            inProgress.episode
+          )?.let { return it }
+        }
+    }
+
+    val localItems = runCatching {
+      DeviceManager.dbManager.getLocalLibraryItems("book") +
+        DeviceManager.dbManager.getLocalLibraryItems("podcast")
+    }.onFailure { error ->
+      Log.w(tag, "Unable to inspect local media for voice search", error)
+    }.getOrDefault(emptyList())
+
+    val candidates = (serverLibraryItems.values.toList() + localItems)
+      .map { item -> item to item.toVoiceSearchCandidate() }
+
+    val ranked = if (request.isGeneralRequest) {
+      candidates.sortedBy { (_, candidate) -> candidate.title.lowercase(Locale.ROOT) }
+    } else {
+      candidates
+        .map { candidate -> candidate to request.score(candidate.second) }
+        .filter { (_, score) -> score > 0 }
+        .sortedByDescending { (_, score) -> score }
+        .map { (candidate, _) -> candidate }
+    }
+
+    ranked.forEach { (item, _) ->
+      playableVoiceResolution(item)?.let { return it }
+    }
+    return null
+  }
+
+  private suspend fun searchServerForVoiceResolution(
+    request: VoiceSearchRequest
+  ): VoiceSearchResolution? {
+    val libraries = serverLibraries.toList()
+    for (term in request.searchTerms) {
+      val foundItems = mutableListOf<LibraryItemWrapper>()
+      for (library in libraries) {
+        val searchResults = try {
+          doSearch(library.id, term)
+        } catch (error: Exception) {
+          Log.w(tag, "Voice search failed for a library", error)
+          emptyMap()
+        }
+
+        listOf("book", "podcast").forEach { resultType ->
+          searchResults[resultType].orEmpty().forEach { mediaItem ->
+            mediaItem.mediaId?.let(::getById)?.let(foundItems::add)
+          }
+        }
+      }
+
+      val distinctItems = foundItems.distinctBy { it.id }
+      val rankedItems = distinctItems.sortedByDescending {
+        request.score(it.toVoiceSearchCandidate())
+      }
+      // The server search endpoint is authoritative even when its fuzzy result
+      // does not contain the literal voice transcription in returned metadata.
+      rankedItems.forEach { item ->
+        playableVoiceResolution(item)?.let { return it }
+      }
+    }
+    return null
+  }
+
+  private suspend fun loadDefaultVoiceResolution(): VoiceSearchResolution? {
+    for (library in serverLibraries.toList()) {
+      val items = if (library.mediaType == "podcast") {
+        suspendCoroutine<List<LibraryItem>> { continuation ->
+          loadLibraryPodcasts(library.id) { continuation.resume(it.orEmpty()) }
+        }
+      } else {
+        suspendCoroutine { continuation ->
+          loadLibraryBooksWithAudio(library.id) { continuation.resume(it) }
+        }
+      }
+
+      for (item in items) {
+        playableVoiceResolution(item)?.let { return it }
+      }
+    }
+    return null
+  }
+
+  private suspend fun playableVoiceResolution(
+    item: LibraryItemWrapper,
+    knownEpisode: PodcastEpisode? = null
+  ): VoiceSearchResolution? {
+    if (item is LocalLibraryItem) {
+      if (item.mediaType != "podcast") {
+        return if (item.hasTracks(null)) VoiceSearchResolution(item) else null
+      }
+      val podcast = item.media as? Podcast ?: return null
+      val episode = knownEpisode
+        ?: podcast.episodes?.sortedByDescending { it.publishedAt }?.firstOrNull()
+        ?: return null
+      return if (item.hasTracks(episode)) VoiceSearchResolution(item, episode) else null
+    }
+
+    val serverItem = item as? LibraryItem ?: return null
+    if (!serverItem.checkHasTracks()) return null
+    if (serverItem.mediaType != "podcast") return VoiceSearchResolution(serverItem)
+
+    var playablePodcast = serverItem
+    var podcast = playablePodcast.media as? Podcast ?: return null
+    if (podcast.episodes.isNullOrEmpty()) {
+      playablePodcast = suspendCoroutine { continuation ->
+        loadPodcastItem(serverItem.libraryId, serverItem.id) {
+          continuation.resume(it ?: serverItem)
+        }
+      }
+      podcast = playablePodcast.media as? Podcast ?: return null
+    }
+
+    val episode = knownEpisode
+      ?: podcast.getNextUnfinishedEpisode(playablePodcast.id, this)
+      ?: podcast.episodes?.sortedByDescending { it.publishedAt }?.firstOrNull()
+      ?: return null
+    return VoiceSearchResolution(playablePodcast, episode)
+  }
+
+  private fun LibraryItemWrapper.toVoiceSearchCandidate(): VoiceSearchCandidate {
+    val media = when (this) {
+      is LibraryItem -> this.media
+      is LocalLibraryItem -> this.media
+      else -> null
+    }
+    val metadata = media?.metadata
+    val artists = mutableListOf<String>()
+    val albums = mutableListOf<String>()
+    val genres = mutableListOf<String>()
+
+    when (metadata) {
+      is BookMetadata -> {
+        metadata.authorName?.let(artists::add)
+        metadata.authorNameLF?.let(artists::add)
+        metadata.authors.orEmpty().mapTo(artists) { it.name }
+        metadata.narratorName?.let(artists::add)
+        artists.addAll(metadata.narrators.orEmpty())
+        metadata.seriesName?.let(albums::add)
+        metadata.series.orEmpty().mapTo(albums) { it.name }
+        genres.addAll(metadata.genres)
+      }
+      is PodcastMetadata -> {
+        metadata.author?.let(artists::add)
+        genres.addAll(metadata.genres)
+      }
+    }
+
+    return VoiceSearchCandidate(
+      id = id,
+      title = metadata?.title.orEmpty(),
+      artists = artists,
+      albums = albums,
+      genres = genres
+    )
+  }
+
+  fun play(
+    libraryItemWrapper: LibraryItemWrapper,
+    episode: PodcastEpisode?,
+    playItemRequestPayload: PlayItemRequestPayload,
+    ownerConfig: ServerConnectionConfig? = null,
+    ownerLease: ConnectionLease? = null,
+    cb: (PlaybackSession?) -> Unit
+  ) {
     if (libraryItemWrapper is LocalLibraryItem) {
       cb(libraryItemWrapper.getPlaybackSession(episode, playItemRequestPayload.deviceInfo))
     } else {
       val libraryItem = libraryItemWrapper as LibraryItem
-      apiHandler.playLibraryItem(libraryItem.id,episode?.id ?: "", playItemRequestPayload) {
+      val resolvedLease = ownerLease ?: synchronized(cacheLock) {
+        if (serverLibraryItems[libraryItem.id] === libraryItem) {
+          serverConnectionLeaseUsed
+        } else {
+          null
+        }
+      }
+      val resolvedConfig = if (ownerConfig != null && resolvedLease != null &&
+        ownerConfig.id == resolvedLease.connectionId &&
+        DeviceManager.getServerConnectionConfig(resolvedLease) === ownerConfig
+      ) {
+        ownerConfig
+      } else {
+        resolvedLease?.let(DeviceManager::getServerConnectionConfig)
+      }
+      if (resolvedLease == null || resolvedConfig == null) {
+        Log.w(tag, "Refusing to play a remote item without a current cache-owner lease")
+        cb(null)
+        return
+      }
+      apiHandler.playLibraryItem(
+        libraryItem.id,
+        episode?.id ?: "",
+        playItemRequestPayload,
+        resolvedConfig
+      ) {
         if (it == null) {
           cb(null)
         } else {
@@ -1009,3 +1544,117 @@ class MediaManager(private var apiHandler: ApiHandler, var ctx: Context) {
     return cost[lhsLength - 1]
   }
 }
+
+internal data class VoiceSearchRequest(
+  val query: String?,
+  val mediaFocus: String?,
+  val title: String?,
+  val artist: String?,
+  val album: String?,
+  val genre: String?,
+  val playlist: String?
+) {
+  val isGeneralRequest: Boolean
+    get() = listOf(query, title, artist, album, genre, playlist).all { it.isNullOrBlank() }
+
+  val searchTerms: List<String>
+    get() = listOf(title, artist, album, playlist, genre, query)
+      .mapNotNull { it?.trim()?.takeIf(String::isNotEmpty) }
+      .distinctBy { it.lowercase(Locale.ROOT) }
+
+  val displayTerm: String
+    get() = title ?: query ?: artist ?: album ?: playlist ?: genre ?: "your library"
+
+  fun score(candidate: VoiceSearchCandidate): Int {
+    if (isGeneralRequest) return 1
+
+    var score = 0
+    score += matchScore(title, listOf(candidate.title), 16)
+    score += matchScore(artist, candidate.artists, 10)
+    score += matchScore(album, candidate.albums, 8)
+    score += matchScore(playlist, candidate.albums, 8)
+    score += matchScore(genre, candidate.genres, 6)
+    score += matchScore(
+      query,
+      listOf(candidate.title) + candidate.artists + candidate.albums + candidate.genres,
+      4
+    )
+    return score
+  }
+
+  companion object {
+    fun from(query: String?, extras: Bundle?): VoiceSearchRequest {
+      val cleanedQuery = query.cleanedVoiceValue()
+      val focus = extras?.getString(MediaStore.EXTRA_MEDIA_FOCUS).cleanedVoiceValue()
+      var title = extras?.getString(MediaStore.EXTRA_MEDIA_TITLE).cleanedVoiceValue()
+      var artist = extras?.getString(MediaStore.EXTRA_MEDIA_ARTIST).cleanedVoiceValue()
+      var album = extras?.getString(MediaStore.EXTRA_MEDIA_ALBUM).cleanedVoiceValue()
+      var genre = extras?.getString(MediaStore.EXTRA_MEDIA_GENRE).cleanedVoiceValue()
+      var playlist = extras?.getString(MediaStore.EXTRA_MEDIA_PLAYLIST).cleanedVoiceValue()
+
+      // Android may put the recognized entity only in query and use MEDIA_FOCUS
+      // to tell the app how to interpret it.
+      when (focus) {
+        MediaStore.Audio.Media.ENTRY_CONTENT_TYPE -> if (title == null) title = cleanedQuery
+        MediaStore.Audio.Artists.ENTRY_CONTENT_TYPE -> if (artist == null) artist = cleanedQuery
+        MediaStore.Audio.Albums.ENTRY_CONTENT_TYPE -> if (album == null) album = cleanedQuery
+        MediaStore.Audio.Genres.ENTRY_CONTENT_TYPE -> if (genre == null) genre = cleanedQuery
+        MediaStore.Audio.Playlists.ENTRY_CONTENT_TYPE -> if (playlist == null) playlist = cleanedQuery
+      }
+
+      return VoiceSearchRequest(
+        query = cleanedQuery,
+        mediaFocus = focus,
+        title = title,
+        artist = artist,
+        album = album,
+        genre = genre,
+        playlist = playlist
+      )
+    }
+  }
+}
+
+internal data class VoiceSearchCandidate(
+  val id: String,
+  val title: String,
+  val artists: List<String> = emptyList(),
+  val albums: List<String> = emptyList(),
+  val genres: List<String> = emptyList()
+)
+
+internal data class VoiceSearchResolution(
+  val item: LibraryItemWrapper,
+  val episode: PodcastEpisode? = null
+)
+
+internal sealed class VoiceSearchResult {
+  data class Found(val resolution: VoiceSearchResolution) : VoiceSearchResult()
+  object NoMatch : VoiceSearchResult()
+  object Unavailable : VoiceSearchResult()
+}
+
+private fun String?.cleanedVoiceValue(): String? =
+  this?.trim()?.takeIf { it.isNotEmpty() }
+
+private fun matchScore(requested: String?, values: List<String>, weight: Int): Int {
+  val needle = requested.normalizedVoiceValue()
+  if (needle.isEmpty()) return 0
+
+  return values.maxOfOrNull { rawValue ->
+    val value = rawValue.normalizedVoiceValue()
+    when {
+      value.isEmpty() -> 0
+      value == needle -> weight + 4
+      value.startsWith(needle) || needle.startsWith(value) -> weight + 2
+      value.contains(needle) || needle.contains(value) -> weight
+      else -> 0
+    }
+  } ?: 0
+}
+
+private fun String?.normalizedVoiceValue(): String =
+  this.orEmpty()
+    .lowercase(Locale.ROOT)
+    .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
+    .trim()

@@ -44,7 +44,11 @@ data class ServerConnectionConfig(
   var username:String,
   var token:String,
   var customHeaders:Map<String, String>?
-)
+) {
+  /** Never allow credentials, server addresses, or header values into crash/log strings. */
+  override fun toString(): String =
+    "ServerConnectionConfig(index=$index, version=$version, credentials=<redacted>)"
+}
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class LocalFile(
@@ -77,6 +81,10 @@ data class LocalFile(
     if (mimeType == "application/vnd.amazon.mobi8-ebook") return "azw3"
     return null
   }
+
+  /** Keep document-provider URIs, names, identifiers, and paths out of diagnostics. */
+  override fun toString(): String =
+    "LocalFile(mimeType=$mimeType, size=$size, fileIdentityAndPaths=<redacted>)"
 }
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -89,7 +97,12 @@ data class LocalFolder(
   var simplePath:String,
   var storageType:String,
   var mediaType:String
-)
+) {
+  /** Keep document-provider URIs, folder names, identifiers, and paths out of diagnostics. */
+  override fun toString(): String =
+    "LocalFolder(storageType=$storageType, mediaType=$mediaType, " +
+      "folderIdentityAndPaths=<redacted>)"
+}
 
 @JsonTypeInfo(use= JsonTypeInfo.Id.DEDUCTION)
 @JsonSubTypes(
@@ -108,7 +121,12 @@ data class DeviceInfo(
   var model:String,
   var sdkVersion:Int,
   var clientVersion: String
-)
+) {
+  /** The ID is a random install-scoped app-instance ID; redact it in diagnostics. */
+  override fun toString(): String =
+    "DeviceInfo(sdkVersion=$sdkVersion, clientVersion=$clientVersion, " +
+      "deviceIdentity=<redacted>)"
+}
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class PlayItemRequestPayload(
@@ -178,17 +196,23 @@ data class DeviceSettings(
   }
 
   @get:JsonIgnore
-  val jumpBackwardsTimeMs get() = jumpBackwardsTime * 1000L
+  val jumpBackwardsTimeMs get() = jumpBackwardsTime.coerceIn(1, 3_600) * 1000L
   @get:JsonIgnore
-  val jumpForwardTimeMs get() = jumpForwardTime * 1000L
+  val jumpForwardTimeMs get() = jumpForwardTime.coerceIn(1, 3_600) * 1000L
   @get:JsonIgnore
-  val autoSleepTimerStartHour get() = autoSleepTimerStartTime.split(":")[0].toInt()
+  val autoSleepTimerStartHour get() = clockPart(autoSleepTimerStartTime, 0, 22)
   @get:JsonIgnore
-  val autoSleepTimerStartMinute get() = autoSleepTimerStartTime.split(":")[1].toInt()
+  val autoSleepTimerStartMinute get() = clockPart(autoSleepTimerStartTime, 1, 0)
   @get:JsonIgnore
-  val autoSleepTimerEndHour get() = autoSleepTimerEndTime.split(":")[0].toInt()
+  val autoSleepTimerEndHour get() = clockPart(autoSleepTimerEndTime, 0, 6)
   @get:JsonIgnore
-  val autoSleepTimerEndMinute get() = autoSleepTimerEndTime.split(":")[1].toInt()
+  val autoSleepTimerEndMinute get() = clockPart(autoSleepTimerEndTime, 1, 0)
+
+  private fun clockPart(value: String, index: Int, fallback: Int): Int {
+    val parsed = value.split(":").getOrNull(index)?.toIntOrNull() ?: return fallback
+    val validRange = if (index == 0) 0..23 else 0..59
+    return parsed.takeIf { it in validRange } ?: fallback
+  }
 
 
   @JsonIgnore
@@ -214,8 +238,9 @@ data class DeviceData(
   @JsonIgnore
   fun getLastServerConnectionConfig(): ServerConnectionConfig? {
     return lastServerConnectionConfigId?.let { lsccid ->
-      return serverConnectionConfigs.find { it.id == lsccid }
+      return serverConnectionConfigs.find {
+        it.id == lsccid && com.audiobookshelf.app.device.DeviceManager.isServerAddressAllowed(it.address)
+      }
     }
   }
 }
-

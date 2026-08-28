@@ -3,6 +3,7 @@ package com.audiobookshelf.app.media
 import android.util.Log
 import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.device.DeviceManager
+import com.audiobookshelf.app.device.ConnectionLease
 import com.audiobookshelf.app.player.PlayerNotificationService
 
 object MediaEventManager {
@@ -10,110 +11,165 @@ object MediaEventManager {
 
   var clientEventEmitter: PlayerNotificationService.ClientEventEmitter? = null
 
-  fun playEvent(playbackSession: PlaybackSession) {
-    Log.i(tag, "Play Event for media \"${playbackSession.displayTitle}\"")
-    addPlaybackEvent("Play", playbackSession, null)
+  fun playEvent(playbackSession: PlaybackSession, lease: ConnectionLease? = null) {
+    Log.i(tag, "Play event")
+    addPlaybackEvent("Play", playbackSession, null, lease)
   }
 
-  fun pauseEvent(playbackSession: PlaybackSession, syncResult: SyncResult?) {
-    Log.i(tag, "Pause Event for media \"${playbackSession.displayTitle}\"")
-    addPlaybackEvent("Pause", playbackSession, syncResult)
+  fun pauseEvent(
+    playbackSession: PlaybackSession,
+    syncResult: SyncResult?,
+    lease: ConnectionLease? = null
+  ) {
+    Log.i(tag, "Pause event")
+    addPlaybackEvent("Pause", playbackSession, syncResult, lease)
   }
 
-  fun stopEvent(playbackSession: PlaybackSession, syncResult: SyncResult?) {
-    Log.i(tag, "Stop Event for media \"${playbackSession.displayTitle}\"")
-    addPlaybackEvent("Stop", playbackSession, syncResult)
+  fun stopEvent(
+    playbackSession: PlaybackSession,
+    syncResult: SyncResult?,
+    lease: ConnectionLease? = null
+  ) {
+    Log.i(tag, "Stop event")
+    addPlaybackEvent("Stop", playbackSession, syncResult, lease)
   }
 
-  fun saveEvent(playbackSession: PlaybackSession, syncResult: SyncResult?) {
-    Log.i(tag, "Save Event for media \"${playbackSession.displayTitle}\"")
-    addPlaybackEvent("Save", playbackSession, syncResult)
+  fun saveEvent(
+    playbackSession: PlaybackSession,
+    syncResult: SyncResult?,
+    lease: ConnectionLease? = null
+  ) {
+    Log.i(tag, "Save event")
+    addPlaybackEvent("Save", playbackSession, syncResult, lease)
   }
 
-  fun finishedEvent(playbackSession: PlaybackSession, syncResult: SyncResult?) {
-    Log.i(tag, "Finished Event for media \"${playbackSession.displayTitle}\"")
-    addPlaybackEvent("Finished", playbackSession, syncResult)
+  fun finishedEvent(
+    playbackSession: PlaybackSession,
+    syncResult: SyncResult?,
+    lease: ConnectionLease? = null
+  ) {
+    Log.i(tag, "Finished event")
+    addPlaybackEvent("Finished", playbackSession, syncResult, lease)
   }
 
-  fun seekEvent(playbackSession: PlaybackSession, syncResult: SyncResult?) {
-    Log.i(
-            tag,
-            "Seek Event for media \"${playbackSession.displayTitle}\", currentTime=${playbackSession.currentTime}"
-    )
-    addPlaybackEvent("Seek", playbackSession, syncResult)
+  fun seekEvent(
+    playbackSession: PlaybackSession,
+    syncResult: SyncResult?,
+    lease: ConnectionLease? = null
+  ) {
+    Log.i(tag, "Seek event")
+    addPlaybackEvent("Seek", playbackSession, syncResult, lease)
   }
 
-  fun syncEvent(mediaProgress: MediaProgressWrapper, description: String) {
-    Log.i(
-            tag,
-            "Sync Event for media item id \"${mediaProgress.mediaItemId}\", currentTime=${mediaProgress.currentTime}"
-    )
-    addSyncEvent("Sync", mediaProgress, description)
+  fun syncEvent(
+    mediaProgress: MediaProgressWrapper,
+    description: String,
+    lease: ConnectionLease? = null
+  ) {
+    Log.i(tag, "Sync event")
+    addSyncEvent("Sync", mediaProgress, description, lease)
   }
 
   private fun addSyncEvent(
           eventName: String,
           mediaProgress: MediaProgressWrapper,
-          description: String
+          description: String,
+          lease: ConnectionLease?
   ) {
-    val mediaItemHistory = getMediaItemHistoryMediaItem(mediaProgress.mediaItemId)
-    if (mediaItemHistory == null) {
-      Log.w(
-              tag,
-              "addSyncEvent: Media Item History not created yet for media item id ${mediaProgress.mediaItemId}"
-      )
-      return
+    try {
+      val mediaItemHistory = synchronized(DeviceManager.connectionPersistenceMonitor) {
+        if (lease == null || !DeviceManager.isConnectionLeaseCurrent(lease)) {
+          Log.i(tag, "Ignoring sync history from an expired account lifecycle")
+          return
+        }
+        val history = DeviceManager.dbManager.getMediaItemHistory(
+          mediaProgress.mediaItemId,
+          lease.connectionId,
+          false
+        )
+        if (history == null || history.serverConnectionConfigId != lease.connectionId) {
+          Log.w(tag, "Sync event history was unavailable for the current account")
+          return
+        }
+
+        val mediaItemEvent = MediaItemEvent(
+          name = eventName,
+          type = "Sync",
+          description = description,
+          currentTime = mediaProgress.currentTime,
+          serverSyncAttempted = false,
+          serverSyncSuccess = null,
+          serverSyncMessage = null,
+          timestamp = System.currentTimeMillis()
+        )
+        history.events.add(mediaItemEvent)
+        DeviceManager.dbManager.saveMediaItemHistory(history)
+        history
+      }
+
+      clientEventEmitter?.onMediaItemHistoryUpdated(mediaItemHistory)
+    } catch (error: Exception) {
+      // Play/seek events originate in Exo callbacks. Storage corruption or a
+      // consumer failure must never escape Player.Listener and crash AAOS.
+      Log.e(tag, "Unable to record sync history (${error.javaClass.simpleName})")
     }
-
-    val mediaItemEvent =
-            MediaItemEvent(
-                    name = eventName,
-                    type = "Sync",
-                    description = description,
-                    currentTime = mediaProgress.currentTime,
-                    serverSyncAttempted = false,
-                    serverSyncSuccess = null,
-                    serverSyncMessage = null,
-                    timestamp = System.currentTimeMillis()
-            )
-    mediaItemHistory.events.add(mediaItemEvent)
-    DeviceManager.dbManager.saveMediaItemHistory(mediaItemHistory)
-
-    clientEventEmitter?.onMediaItemHistoryUpdated(mediaItemHistory)
   }
 
   private fun addPlaybackEvent(
           eventName: String,
           playbackSession: PlaybackSession,
-          syncResult: SyncResult?
+          syncResult: SyncResult?,
+          lease: ConnectionLease?
   ) {
-    val mediaItemHistory =
-            getMediaItemHistoryMediaItem(playbackSession.mediaItemId)
-                    ?: createMediaItemHistoryForSession(playbackSession)
+    try {
+      val mediaItemHistory = synchronized(DeviceManager.connectionPersistenceMonitor) {
+        val durableSession = playbackSession.copySanitizedForPersistence()
+        if (!durableSession.isLocal && (
+            lease == null ||
+              durableSession.serverConnectionConfigId != lease.connectionId ||
+              !DeviceManager.isConnectionLeaseCurrent(lease)
+          )) {
+          Log.i(tag, "Ignoring playback history from an expired account lifecycle")
+          return
+        }
+        val history = getMediaItemHistoryForSession(durableSession)
+          ?: createMediaItemHistoryForSession(durableSession)
+        if (durableSession.isLocal && durableSession.serverConnectionConfigId == null) {
+          history.serverConnectionConfigId = null
+          history.serverAddress = null
+          history.serverUserId = null
+        }
 
-    val mediaItemEvent =
-            MediaItemEvent(
-                    name = eventName,
-                    type = "Playback",
-                    description = "",
-                    currentTime = playbackSession.currentTime,
-                    serverSyncAttempted = syncResult?.serverSyncAttempted ?: false,
-                    serverSyncSuccess = syncResult?.serverSyncSuccess,
-                    serverSyncMessage = syncResult?.serverSyncMessage,
-                    timestamp = System.currentTimeMillis()
-            )
-    mediaItemHistory.events.add(mediaItemEvent)
-    DeviceManager.dbManager.saveMediaItemHistory(mediaItemHistory)
+        val mediaItemEvent = MediaItemEvent(
+          name = eventName,
+          type = "Playback",
+          description = "",
+          currentTime = durableSession.currentTime,
+          serverSyncAttempted = syncResult?.serverSyncAttempted ?: false,
+          serverSyncSuccess = syncResult?.serverSyncSuccess,
+          serverSyncMessage = syncResult?.serverSyncMessage,
+          timestamp = System.currentTimeMillis()
+        )
+        history.events.add(mediaItemEvent)
+        DeviceManager.dbManager.saveMediaItemHistory(history)
+        history
+      }
 
-    clientEventEmitter?.onMediaItemHistoryUpdated(mediaItemHistory)
+      clientEventEmitter?.onMediaItemHistoryUpdated(mediaItemHistory)
+    } catch (error: Exception) {
+      Log.e(tag, "Unable to record playback history (${error.javaClass.simpleName})")
+    }
   }
 
-  private fun getMediaItemHistoryMediaItem(mediaItemId: String): MediaItemHistory? {
-    return DeviceManager.dbManager.getMediaItemHistory(mediaItemId)
-  }
+  private fun getMediaItemHistoryForSession(session: PlaybackSession): MediaItemHistory? =
+    DeviceManager.dbManager.getMediaItemHistory(
+      session.mediaItemId,
+      session.serverConnectionConfigId,
+      session.isLocal && session.serverConnectionConfigId == null
+    )
 
   private fun createMediaItemHistoryForSession(playbackSession: PlaybackSession): MediaItemHistory {
-    Log.i(tag, "Creating new media item history for media \"${playbackSession.displayTitle}\"")
+    Log.i(tag, "Creating media item history")
     val libraryItemId = playbackSession.libraryItemId ?: ""
     val episodeId: String? = playbackSession.episodeId
     return MediaItemHistory(
@@ -121,7 +177,7 @@ object MediaEventManager {
             mediaDisplayTitle = playbackSession.displayTitle ?: "Unset",
             libraryItemId,
             episodeId,
-            false, // local-only items are not supported
+            playbackSession.isLocal,
             playbackSession.serverConnectionConfigId,
             playbackSession.serverAddress,
             playbackSession.userId,

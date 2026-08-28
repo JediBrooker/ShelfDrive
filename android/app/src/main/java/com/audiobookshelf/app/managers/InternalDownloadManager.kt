@@ -3,6 +3,7 @@ package com.audiobookshelf.app.managers
 import android.util.Log
 import java.io.*
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import okhttp3.*
 
 /**
@@ -13,13 +14,34 @@ import okhttp3.*
  */
 class InternalDownloadManager(
         private val outputStream: FileOutputStream,
-        private val progressCallback: DownloadItemManager.InternalProgressCallback
+        private val progressCallback: DownloadItemManager.InternalProgressCallback,
+        private val connectionId: String? = null
 ) : AutoCloseable {
+
+  companion object {
+    private val active = java.util.Collections.synchronizedSet(
+      mutableSetOf<InternalDownloadManager>()
+    )
+
+    fun cancelForConnection(connectionId: String) {
+      val matching = synchronized(active) {
+        active.filter { it.connectionId == connectionId }
+      }
+      matching.forEach { manager -> runCatching { manager.close() } }
+    }
+  }
 
   private val tag = "InternalDownloadManager"
   private val client: OkHttpClient =
-          OkHttpClient.Builder().connectTimeout(30, TimeUnit.SECONDS).build()
+          OkHttpClient.Builder()
+                  .connectTimeout(30, TimeUnit.SECONDS)
+                  .readTimeout(60, TimeUnit.SECONDS)
+                  .build()
   private val writer = BinaryFileWriter(outputStream, progressCallback)
+  private val started = AtomicBoolean(false)
+  private val completed = AtomicBoolean(false)
+  private val closed = AtomicBoolean(false)
+  @Volatile private var activeCall: Call? = null
 
   /**
    * Downloads a file from the given URL.
@@ -29,27 +51,83 @@ class InternalDownloadManager(
    */
   @Throws(IOException::class)
   fun download(url: String) {
-    val request: Request = Request.Builder().url(url).addHeader("Accept-Encoding", "identity").build()
-    client.newCall(request)
-            .enqueue(
+    if (!started.compareAndSet(false, true)) {
+      Log.w(tag, "Ignoring duplicate download start")
+      return
+    }
+    if (closed.get()) {
+      complete(failed = true)
+      return
+    }
+
+    val request = try {
+      Request.Builder().url(url).addHeader("Accept-Encoding", "identity").build()
+    } catch (error: IllegalArgumentException) {
+      Log.e(tag, "Download URL is invalid")
+      complete(failed = true)
+      closeWriter()
+      return
+    }
+
+    val call = client.newCall(request)
+    activeCall = call
+    if (connectionId != null) active.add(this)
+    call.enqueue(
                     object : Callback {
                       override fun onFailure(call: Call, e: IOException) {
-                        Log.e(tag, "Download URL $url FAILED", e)
-                        progressCallback.onComplete(true)
+                        activeCall = null
+                        Log.e(tag, "Download failed (${e.javaClass.simpleName})")
+                        complete(failed = true)
+                        closeWriter()
                       }
 
                       override fun onResponse(call: Call, response: Response) {
-                        response.body?.let { responseBody ->
-                          val length: Long = response.header("Content-Length")?.toLongOrNull() ?: 0L
-                          writer.write(responseBody.byteStream(), length)
+                        try {
+                          response.use {
+                            if (!it.isSuccessful) {
+                              Log.e(tag, "Download failed with HTTP ${it.code}")
+                              complete(failed = true)
+                              return@use
+                            }
+                            val responseBody = it.body
+                            if (responseBody == null) {
+                              Log.e(tag, "Download response does not contain a file")
+                              complete(failed = true)
+                              return@use
+                            }
+                            val length = responseBody.contentLength().coerceAtLeast(0L)
+                            writer.write(responseBody.byteStream(), length)
+                            complete(failed = false)
+                          }
+                        } catch (e: Exception) {
+                          Log.e(tag, "Download stream failed (${e.javaClass.simpleName})")
+                          complete(failed = true)
+                        } finally {
+                          activeCall = null
+                          closeWriter()
                         }
-                                ?: run {
-                                  Log.e(tag, "Response doesn't contain a file")
-                                  progressCallback.onComplete(true)
-                                }
                       }
                     }
             )
+  }
+
+  private fun complete(failed: Boolean) {
+    if (!completed.compareAndSet(false, true)) return
+    try {
+      progressCallback.onComplete(failed)
+    } catch (callbackError: Exception) {
+      Log.w(tag, "Download completion callback failed (${callbackError.javaClass.simpleName})")
+    }
+  }
+
+  private fun closeWriter() {
+    closed.set(true)
+    active.remove(this)
+    try {
+      writer.close()
+    } catch (e: IOException) {
+      Log.w(tag, "Could not close download output (${e.javaClass.simpleName})")
+    }
   }
 
   /**
@@ -59,7 +137,8 @@ class InternalDownloadManager(
    */
   @Throws(Exception::class)
   override fun close() {
-    writer.close()
+    activeCall?.cancel()
+    closeWriter()
   }
 }
 
@@ -91,9 +170,15 @@ class BinaryFileWriter(
       while (input.read(dataBuffer).also { readBytes = it } != -1) {
         totalBytes += readBytes
         outputStream.write(dataBuffer, 0, readBytes)
-        progressCallback.onProgress(totalBytes, (totalBytes * 100L) / length)
+        val progress = if (length > 0L) {
+          ((totalBytes.coerceAtMost(length).toDouble() / length.toDouble()) * 100.0)
+            .toLong()
+            .coerceIn(0L, 100L)
+        } else {
+          0L
+        }
+        progressCallback.onProgress(totalBytes, progress)
       }
-      progressCallback.onComplete(false)
       return totalBytes
     }
   }
