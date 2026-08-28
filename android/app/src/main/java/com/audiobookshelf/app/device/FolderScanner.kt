@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import com.anggrayudi.storage.file.*
 import com.audiobookshelf.app.data.*
+import com.audiobookshelf.app.downloads.OfflineDownloadPlanner
 import com.audiobookshelf.app.models.DownloadItem
 import com.fasterxml.jackson.core.json.JsonReadFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -30,7 +31,7 @@ class FolderScanner(var ctx: Context) {
           downloadItem: DownloadItem,
           cb: (DownloadItemScanResult?) -> Unit
   ) {
-    val localLibraryItemId = "local_${downloadItem.libraryItemId}"
+    val localLibraryItemId = OfflineDownloadPlanner.localLibraryItemId(downloadItem)
 
     var localEpisodeId: String? = null
     var localLibraryItem: LocalLibraryItem?

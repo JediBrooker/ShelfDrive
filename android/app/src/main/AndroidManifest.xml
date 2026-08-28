@@ -18,10 +18,23 @@
     <!-- Normal (non-runtime) permission used only for brief sleep-timer reset
          feedback on Automotive devices that expose a vibrator. -->
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Signature-only channel for in-process/offline-state refresh events.
+         Supplying an explicit permission also keeps dynamic receivers private
+         on pre-Android-13 vehicles where receiver export flags do not exist. -->
+    <permission
+        android:name="${applicationId}.permission.OFFLINE_DOWNLOAD_STATE"
+        android:protectionLevel="signature" />
+    <uses-permission android:name="${applicationId}.permission.OFFLINE_DOWNLOAD_STATE" />
     <!-- Phone-only storage libraries contribute these transitively. The AAOS
          artifact uses app-private files and persisted content URIs instead. -->
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage"
+        tools:node="remove" />
 
     <application
         android:allowBackup="false"
@@ -52,7 +65,7 @@
 
         <activity
             android:name=".SettingsActivity"
-            android:exported="true"
+            android:exported="false"
             android:label="@string/settings_activity_title"
             android:theme="@style/SettingsTheme" >
             <!-- Not distraction-optimized: this activity has free-text inputs
@@ -62,11 +75,24 @@
             <meta-data
                 android:name="distractionOptimized"
                 android:value="false" />
+        </activity>
+
+        <!-- Public parked-settings entry point. Keeping this as an alias lets
+             the real Activity remain private, so only AccountManager can
+             deliver an AccountAuthenticatorResponse to its explicit target. -->
+        <activity-alias
+            android:name=".SettingsPreferencesAlias"
+            android:exported="true"
+            android:label="@string/settings_activity_title"
+            android:targetActivity=".SettingsActivity" >
+            <meta-data
+                android:name="distractionOptimized"
+                android:value="false" />
             <intent-filter>
                 <action android:name="android.intent.action.APPLICATION_PREFERENCES" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
-        </activity>
+        </activity-alias>
 
         <receiver android:name="androidx.media.session.MediaButtonReceiver" android:exported="true">
             <intent-filter>
@@ -74,10 +100,25 @@
             </intent-filter>
         </receiver>
 
+        <!-- Android's system DownloadManager owns network retry, process-death
+             recovery, reboot recovery, and its user-visible notification. This
+             receiver only validates/publishes ShelfDrive-owned completed files;
+             the app itself does not run a foreground service for downloads. -->
+        <receiver
+            android:name=".downloads.OfflineDownloadCompleteReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS" >
+            <intent-filter>
+                <action android:name="android.intent.action.DOWNLOAD_COMPLETE" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".player.PlayerNotificationService"
             android:enabled="true"
-            android:exported="true" >
+            android:exported="true"
+            tools:ignore="ExportedService" >
             <!-- Exposed so OEM Car Media template hosts can bind and call
                  onGetRoot / onLoadChildren. Caller packages are still gated
                  inside PlayerNotificationService.isValid(). -->

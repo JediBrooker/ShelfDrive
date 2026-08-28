@@ -1184,16 +1184,25 @@ class ApiHandler(
     }
   }
 
-  fun getLibraryItemWithProgress(libraryItemId:String, episodeId:String?, cb: (LibraryItem?) -> Unit) {
+  fun getLibraryItemWithProgress(
+    libraryItemId: String,
+    episodeId: String?,
+    config: ServerConnectionConfig? = DeviceManager.serverConnectionConfig,
+    cb: (LibraryItem?) -> Unit
+  ) {
     val queryParameters = mutableListOf("expanded" to "1", "include" to "progress")
     episodeId?.takeIf { it.isNotEmpty() }?.let { queryParameters.add("episode" to it) }
     val requestUrl = endpoint(listOf("api", "items", libraryItemId), queryParameters)
-    getRequest(requestUrl, null, null) {
+    getRequest(requestUrl, null, config) {
       if (it.has("error")) {
         Log.e(tag, "getLibraryItemWithProgress failed")
         cb(null)
       } else {
-        val libraryItem = jacksonMapper.readValue<LibraryItem>(it.toString())
+        val libraryItem = runCatching {
+          jacksonMapper.readValue<LibraryItem>(it.toString())
+        }.onFailure {
+          Log.e(tag, "getLibraryItemWithProgress returned malformed metadata")
+        }.getOrNull()
         cb(libraryItem)
       }
     }

@@ -40,6 +40,7 @@ internal class ShelfDriveAccountAuthenticator internal constructor(
   ): Bundle {
     if (accountType != ShelfDriveAccountContract.ACCOUNT_TYPE) return unsupported()
     val signInIntent = Intent(appContext, SettingsActivity::class.java).apply {
+      action = ShelfDriveAccountContract.ACTION_AUTHENTICATOR_SIGN_IN
       addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       putExtra(AccountManager.KEY_ACCOUNT_AUTHENTICATOR_RESPONSE, response)
     }

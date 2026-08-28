@@ -1,6 +1,8 @@
 package com.audiobookshelf.app.accounts
 
+import android.app.DownloadManager
 import android.content.Context
+import android.net.Uri
 import com.audiobookshelf.app.data.AudioTrack
 import com.audiobookshelf.app.data.DeviceInfo
 import com.audiobookshelf.app.data.DeviceData
@@ -13,9 +15,11 @@ import com.audiobookshelf.app.data.MediaTypeMetadata
 import com.audiobookshelf.app.data.PlaybackSession
 import com.audiobookshelf.app.data.ServerConnectionConfig
 import com.audiobookshelf.app.device.DeviceManager
+import com.audiobookshelf.app.downloads.OfflineDownloadPlanner
 import com.audiobookshelf.app.managers.SecureStorage
 import com.audiobookshelf.app.managers.RefreshTokenStorage
 import com.audiobookshelf.app.models.DownloadItem
+import com.audiobookshelf.app.models.DownloadItemPart
 import com.audiobookshelf.app.player.PLAYMETHOD_DIRECTPLAY
 import io.paperdb.Paper
 import org.junit.After
@@ -28,7 +32,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowDownloadManager
+import java.io.File
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
@@ -40,6 +47,8 @@ class ShelfDriveConnectionDataCleanerTest {
   fun setUp() {
     Paper.init(context)
     TEST_BOOKS.forEach { Paper.book(it).destroy() }
+    ShadowDownloadManager.reset()
+    OfflineDownloadPlanner.managedRoot(context)?.deleteRecursively()
     context.getSharedPreferences("SecureStorage", Context.MODE_PRIVATE).edit().clear().commit()
     context.getSharedPreferences(PURGE_PREFS, Context.MODE_PRIVATE).edit().clear().commit()
     DeviceManager.deviceData = emptyDeviceData()
@@ -53,6 +62,8 @@ class ShelfDriveConnectionDataCleanerTest {
     TEST_BOOKS.forEach { Paper.book(it).destroy() }
     context.getSharedPreferences("SecureStorage", Context.MODE_PRIVATE).edit().clear().commit()
     context.getSharedPreferences(PURGE_PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+    OfflineDownloadPlanner.managedRoot(context)?.deleteRecursively()
+    ShadowDownloadManager.reset()
   }
 
   @Test
@@ -348,6 +359,105 @@ class ShelfDriveConnectionDataCleanerTest {
     assertNull(retainedProgress.libraryItemId)
     assertNull(retainedProgress.episodeId)
     assertTrue(DeviceManager.dbManager.getDownloadItems().isEmpty())
+  }
+
+  @Test
+  fun disconnectCancelsManagedPlatformTransferAndDeletesOnlyItsPrivateJobDirectory() {
+    val removed = config("connection-managed-download")
+    DeviceManager.deviceData = DeviceData(
+      mutableListOf(removed),
+      removed.id,
+      DeviceSettings.default(),
+      null
+    )
+    DeviceManager.serverConnectionConfig = removed
+    DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
+
+    val root = checkNotNull(OfflineDownloadPlanner.managedRoot(context))
+    val jobId = OfflineDownloadPlanner.jobId(removed.id, "remote-managed-book")
+    val jobFolder = File(root, jobId)
+    val finalFile = File(jobFolder, "track-0001.mp3")
+    val partialFile = File(jobFolder, "track-0001.mp3.part")
+    assertTrue(jobFolder.mkdirs())
+    partialFile.writeBytes("partial-audio".toByteArray())
+    val source = Uri.parse(
+      "https://example.test/api/items/remote-managed-book/file/audio-ino/download"
+    )
+    val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+    // Robolectric starts synthetic IDs at zero, while Android's real IDs are
+    // positive. Queue the unrelated row first so the managed row exercises
+    // the production `id > 0` guard with a realistic ID.
+    val unrelatedId = downloadManager.enqueue(
+      DownloadManager.Request(Uri.parse("https://example.test/unrelated"))
+        .setDestinationUri(Uri.fromFile(File(root.parentFile, "unrelated.part")))
+    )
+    val platformId = downloadManager.enqueue(
+      DownloadManager.Request(source).setDestinationUri(Uri.fromFile(partialFile))
+    )
+    val managedFolder = LocalFolder(
+      id = OfflineDownloadPlanner.MANAGED_FOLDER_ID,
+      name = "ShelfDrive offline storage",
+      contentUrl = "",
+      basePath = root.absolutePath,
+      absolutePath = root.absolutePath,
+      simplePath = "offline",
+      storageType = "internal",
+      mediaType = "book"
+    )
+    DeviceManager.dbManager.saveDownloadItem(
+      DownloadItem(
+        id = jobId,
+        libraryItemId = "remote-managed-book",
+        episodeId = null,
+        userMediaProgress = null,
+        serverConnectionConfigId = removed.id,
+        serverAddress = removed.address,
+        serverUserId = removed.userId,
+        mediaType = "book",
+        itemFolderPath = jobFolder.absolutePath,
+        localFolder = managedFolder,
+        itemTitle = "Managed book",
+        itemSubfolder = jobId,
+        media = MediaType(MediaTypeMetadata("Managed book", false), null),
+        downloadItemParts = mutableListOf(
+          DownloadItemPart(
+            id = "managed-part",
+            downloadItemId = jobId,
+            filename = finalFile.name,
+            fileSize = partialFile.length(),
+            finalDestinationPath = finalFile.absolutePath,
+            serverPath = source.encodedPath.orEmpty(),
+            localFolderName = managedFolder.name,
+            localFolderUrl = "",
+            localFolderId = managedFolder.id,
+            ebookFile = null,
+            audioTrack = null,
+            episode = null,
+            completed = false,
+            moved = false,
+            isMoving = false,
+            failed = false,
+            uri = source,
+            destinationUri = Uri.fromFile(partialFile),
+            finalDestinationUri = Uri.fromFile(finalFile),
+            finalDestinationSubfolder = jobId,
+            downloadId = platformId,
+            progress = 0L,
+            bytesDownloaded = 0L
+          )
+        )
+      )
+    )
+    val shadowDownloadManager = shadowOf(downloadManager)
+    assertEquals(2, shadowDownloadManager.requestCount)
+
+    assertTrue(ShelfDriveConnectionDataCleaner(context).removeConnectionData(removed.id))
+
+    assertNull(shadowDownloadManager.getRequest(platformId))
+    assertEquals(1, shadowDownloadManager.requestCount)
+    assertTrue(shadowDownloadManager.getRequest(unrelatedId) != null)
+    assertTrue(DeviceManager.dbManager.getDownloadItems().isEmpty())
+    assertFalse(jobFolder.exists())
   }
 
   private fun config(id: String) = ServerConnectionConfig(

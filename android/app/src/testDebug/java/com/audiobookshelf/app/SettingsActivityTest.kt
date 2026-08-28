@@ -1,8 +1,6 @@
 package com.audiobookshelf.app
 
 import android.app.Activity
-import android.app.Dialog
-import android.content.DialogInterface
 import android.os.Looper
 import android.widget.EditText
 import android.widget.TextView
@@ -29,7 +27,6 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.android.controller.ActivityController
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.LooperMode
-import org.robolectric.shadows.ShadowDialog
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.ConcurrentHashMap
 
@@ -69,7 +66,6 @@ class SettingsActivityTest {
 
   @After
   fun tearDown() {
-    ShadowDialog.getShownDialogs().toList().forEach { it.dismiss() }
     if (::controller.isInitialized) controller.pause().stop().destroy()
     if (::server.isInitialized) server.shutdown()
     DeviceManager.serverConnectionConfig = null
@@ -159,7 +155,7 @@ class SettingsActivityTest {
     signIn.performClick()
     confirmDataDisclosure()
 
-    val errorDialog = assertSignInFailed("password")
+    assertSignInFailed("password")
     assertEquals(address, serverUrl.text.toString())
     assertEquals("reviewer", username.text.toString())
     assertEquals("wrong-password", password.text.toString())
@@ -168,7 +164,6 @@ class SettingsActivityTest {
     assertTrue(password.isEnabled)
     assertNoSavedConnectionOrRefresh()
 
-    errorDialog.dismiss()
     password.setText("correct-password")
     server.enqueue(successResponse())
     signIn.performClick()
@@ -186,8 +181,7 @@ class SettingsActivityTest {
     signIn.performClick()
     confirmDataDisclosure()
 
-    val dialog = assertSignInFailed("HTTP 403")
-    val message = dialog.findViewById<TextView>(android.R.id.message).text.toString()
+    val message = assertSignInFailed("HTTP 403")
     assertFalse(message.contains("password", ignoreCase = true))
     assertEquals("correct-password", password.text.toString())
     assertNoSavedConnectionOrRefresh()
@@ -221,13 +215,24 @@ class SettingsActivityTest {
   }
 
   @Test
-  fun cancellingDataDisclosureDoesNotContactServerOrSaveAccount() {
+  fun `parked settings exposes compliant offline fallback and readable privacy text`() {
+    val downloadCurrent = activity.findViewById<TextView>(R.id.downloadCurrentBookButton)
+    val offlineHelp = activity.findViewById<TextView>(R.id.offlineCurrentBookSummary)
+    val privacy = activity.findViewById<TextView>(R.id.privacyPolicySummary)
+    val minimumTarget = (76 * activity.resources.displayMetrics.density).toInt()
+
+    assertFalse(downloadCurrent.isEnabled)
+    assertTrue(downloadCurrent.layoutParams.height >= minimumTarget)
+    assertTrue(offlineHelp.text.toString().contains("Start an audiobook"))
+    assertTrue(privacy.text.toString().contains("JediBkApps"))
+    assertTrue(privacy.text.toString().contains("christianbrooker@gmail.com"))
+  }
+
+  @Test
+  fun reviewingDataDisclosureDoesNotContactServerOrSaveAccount() {
     fillCredentials("correct-password")
 
     signIn.performClick()
-    shadowOf(Looper.getMainLooper()).idle()
-    val dialog = ShadowDialog.getLatestDialog() as androidx.appcompat.app.AlertDialog
-    dialog.getButton(DialogInterface.BUTTON_NEGATIVE).performClick()
     shadowOf(Looper.getMainLooper()).idle()
 
     assertTrue(signIn.isEnabled)
@@ -319,22 +324,15 @@ class SettingsActivityTest {
 
   private fun confirmDataDisclosure() {
     shadowOf(Looper.getMainLooper()).idle()
-    val dialog = ShadowDialog.getLatestDialog()
-      ?: throw AssertionError("Data disclosure was not shown")
-    assertTrue(dialog.isShowing)
-    assertEquals(
-      "Data sent to your server",
-      dialog.findViewById<TextView>(androidx.appcompat.R.id.alertTitle).text.toString()
-    )
-    val message = dialog.findViewById<TextView>(android.R.id.message).text.toString()
+    val message = status.text.toString()
+    assertTrue(message.startsWith("Data sent to your server"))
     assertTrue(message.contains(address))
     assertTrue(message.contains("username and password"))
     assertTrue(message.contains("random install-scoped app-instance identifier"))
     assertTrue(message.contains("background progress sync"))
     assertTrue(message.contains("server you chose"))
-    (dialog as androidx.appcompat.app.AlertDialog)
-      .getButton(DialogInterface.BUTTON_POSITIVE)
-      .performClick()
+    assertEquals("Continue and sign in", signIn.text.toString())
+    signIn.performClick()
     shadowOf(Looper.getMainLooper()).idle()
   }
 
@@ -359,19 +357,16 @@ class SettingsActivityTest {
     )
   }
 
-  private fun assertSignInFailed(reason: String): Dialog {
-    await("sign-in failure") { ShadowDialog.getLatestDialog()?.isShowing == true }
+  private fun assertSignInFailed(reason: String): String {
+    await("sign-in failure") {
+      status.text.toString().startsWith("Sign-in failed") && signIn.isEnabled
+    }
     assertFalse(activity.isFinishing)
     assertTrue(signIn.isEnabled)
-    assertTrue(status.text.toString().startsWith("Sign-in failed"))
-
-    val dialog = ShadowDialog.getLatestDialog()
-    assertEquals("Sign-in failed",
-      dialog.findViewById<TextView>(androidx.appcompat.R.id.alertTitle).text.toString())
-    val message = dialog.findViewById<TextView>(android.R.id.message).text.toString()
+    val message = status.text.toString()
     assertTrue("Expected a readable failure reason, got: $message",
       message.contains(reason, ignoreCase = true))
-    return dialog
+    return message
   }
 
   private fun assertNoSavedConnectionOrRefresh() {

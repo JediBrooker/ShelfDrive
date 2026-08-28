@@ -3,7 +3,7 @@
     <string name="app_name">ShelfDrive</string>
     <string name="settings_activity_title">ShelfDrive Settings</string>
     <string name="settings_title">Settings</string>
-    <string name="settings_back">Back</string>
+    <string name="settings_close">Close</string>
     <string name="settings_parked_only">Sign-in and settings changes are only available while parked.</string>
     <string name="settings_section_server">SERVER</string>
     <string name="settings_server_url">Server URL</string>
@@ -15,7 +15,36 @@
     <string name="settings_disconnect">Disconnect</string>
     <string name="settings_disconnected">Disconnected</string>
     <string name="settings_section_privacy">PRIVACY</string>
-    <string name="settings_privacy_policy">Privacy policy</string>
+    <string name="settings_section_offline">OFFLINE AUDIOBOOKS</string>
+    <string name="settings_offline_help">Use Download next to an audiobook in your car’s media browser. If your vehicle does not show that action, start the audiobook, park, then use Download current audiobook below. Finished books appear under Downloads and play without a connection.</string>
+    <string name="settings_offline_summary_loading">Calculating offline storage…</string>
+    <string name="settings_offline_summary_unavailable">Offline storage is temporarily unavailable.</string>
+    <string name="settings_offline_summary">%1$s (%2$s) • %3$s</string>
+    <plurals name="settings_offline_downloaded_count">
+        <item quantity="one">%d downloaded audiobook</item>
+        <item quantity="other">%d downloaded audiobooks</item>
+    </plurals>
+    <plurals name="settings_offline_active_count">
+        <item quantity="one">%d active download</item>
+        <item quantity="other">%d active downloads</item>
+    </plurals>
+    <string name="settings_offline_allow_metered">Allow new downloads over metered networks</string>
+    <string name="settings_offline_current_book">Current audiobook: %1$s</string>
+    <string name="settings_offline_current_book_untitled">Untitled audiobook</string>
+    <string name="settings_offline_current_book_none">Start an audiobook from your server first, then return here while parked.</string>
+    <string name="settings_offline_download_current">Download current audiobook</string>
+    <string name="settings_offline_current_starting">Starting download…</string>
+    <string name="settings_offline_current_active">Download in progress</string>
+    <string name="settings_offline_current_downloaded">Already downloaded</string>
+    <string name="settings_offline_cancel_all">Cancel all</string>
+    <string name="settings_offline_delete_all">Delete all</string>
+    <string name="settings_offline_cancel_success">All active downloads were canceled.</string>
+    <string name="settings_offline_no_active_downloads">There are no active downloads.</string>
+    <string name="settings_offline_delete_message">This permanently removes every audiobook downloaded by ShelfDrive from this vehicle. Your server copies are not affected.</string>
+    <string name="settings_offline_delete_confirm">Delete all</string>
+    <string name="settings_offline_delete_success">All downloaded audiobooks were removed.</string>
+    <string name="settings_offline_no_downloads">There are no downloaded audiobooks to remove.</string>
+    <string name="settings_offline_action_failed">ShelfDrive couldn’t update offline audiobooks. Please try again.</string>
     <string name="settings_section_playback">PLAYBACK</string>
     <string name="settings_jump_forward">Jump forward</string>
     <string name="settings_jump_backward">Jump backward</string>
@@ -38,9 +67,21 @@
     <string name="voice_search_no_playable_media">ShelfDrive couldn’t find anything playable in your library.</string>
     <string name="voice_search_unavailable">ShelfDrive couldn’t search your library. Check your server and connection, then try again.</string>
     <string name="voice_search_playback_failed">ShelfDrive found the media but couldn’t start playback. Check your connection and try again.</string>
+    <string name="offline_action_download">Download</string>
+    <string name="offline_action_cancel">Cancel download</string>
+    <string name="offline_action_remove">Remove download</string>
+    <string name="offline_result_started">Download started</string>
+    <string name="offline_result_already_active">Download already in progress</string>
+    <string name="offline_result_already_downloaded">Already downloaded</string>
+    <string name="offline_result_canceled">Download canceled</string>
+    <string name="offline_result_removed">Download removed</string>
+    <string name="offline_result_nothing_to_do">Nothing to change</string>
+    <string name="offline_result_processing">Offline request accepted</string>
+    <string name="offline_result_failed">Offline action failed</string>
+    <string name="offline_result_invalid_item">This audiobook is no longer available</string>
+    <string name="offline_result_sign_in_required">Sign in to download this audiobook</string>
     <string name="settings_signing_in">Signing in…</string>
     <string name="settings_sign_in_success">Signed in successfully</string>
-    <string name="settings_sign_in_failed">Sign-in failed</string>
     <string name="settings_sign_in_failed_reason">Sign-in failed: %1$s</string>
     <string name="settings_sign_in_required_fields">Enter the server URL, username, and password, then try again.</string>
     <string name="settings_sign_in_invalid_credentials">Incorrect username or password. Check your credentials and try again.</string>
@@ -54,10 +95,9 @@
     <string name="data_disclosure_title">Data sent to your server</string>
     <string name="data_disclosure_message">Before ShelfDrive connects to %1$s, it sends your username and password there for sign-in. If sign-in succeeds, it sends your account or user ID and access token, a random install-scoped app-instance identifier, device model, Android version, and ShelfDrive version. While you use the app—and during enabled background progress sync—it also sends searches, selected titles, playback actions, listening position, progress, and history to that server.\n\nThe ShelfDrive developer does not receive this data. The operator of the server you chose controls its storage, retention, sharing, and deletion. ShelfDrive requires HTTPS, but you should continue only if you trust that server and its operator.</string>
     <string name="data_disclosure_continue">Continue and sign in</string>
-    <string name="data_disclosure_cancel">Cancel</string>
-    <string name="privacy_policy_title">ShelfDrive Privacy Policy</string>
+    <string name="data_disclosure_expired">Sign-in confirmation expired. Review your details and tap Sign in again.</string>
     <string name="privacy_policy_view_online">View online</string>
     <string name="privacy_policy_no_browser">No browser is available. The privacy policy remains shown here in Settings.</string>
     <string name="privacy_policy_url" translatable="false">https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY</string>
-    <string name="privacy_policy_summary">ShelfDrive connects only to the Audiobookshelf server you choose. To provide sign-in, browsing, playback, and progress sync, the app sends your username and password during sign-in, then account/user identifiers, access tokens, a random install-scoped app-instance identifier and device details, and listening/playback activity to that server over HTTPS. Your password is not retained.\n\nAccount tokens, server settings, listening state, cached artwork, and any offline media are stored on this vehicle. The ShelfDrive developer does not operate your Audiobookshelf server, receive this data, sell it, or use it for advertising. Your server operator controls retention and deletion of server-side data. Disconnecting removes the account from ShelfDrive; use your server to delete server-side records.\n\nThe full policy and contact details are available using “View online.”</string>
+    <string name="privacy_policy_summary">Effective 28 August 2026. ShelfDrive is published by JediBkApps, operated by Christian Brooker. ShelfDrive connects only to the Audiobookshelf server you choose. To provide sign-in, browsing, playback, offline downloads, and progress sync, the app sends your username and password during sign-in, then account/user identifiers, access tokens, a random install-scoped app-instance identifier and device details, and listening/playback activity to that server over HTTPS. Your password is not retained.\n\nAccount tokens, server settings, listening state, cached artwork, partial downloads, and completed offline audiobooks are stored on this vehicle. Downloaded audio is kept in ShelfDrive’s app-specific external-files directory; Android 10 and later protect it with scoped storage, while on Android 9 another app with broad storage permission may be able to read it. Android’s Download Manager receives the access token as a request header and handles transfer/retry. ShelfDrive rejects endpoints that redirect during its preflight, and your reverse proxy should serve audio directly because a later redirect may receive replayed request headers.\n\nJediBkApps does not operate your Audiobookshelf server, receive this data, sell it, or use it for advertising. Disconnecting cancels that account’s pending downloads and removes its server linkage, but completed offline books remain until you delete them in Offline Audiobooks settings or clear app storage. Use your server to delete server-side records. Contact christianbrooker@gmail.com with privacy questions. The complete policy is also available using “View online.”</string>
 </resources>

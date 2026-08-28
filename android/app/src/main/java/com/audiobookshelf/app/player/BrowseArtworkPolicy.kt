@@ -80,6 +80,17 @@ internal object BrowseArtworkPolicy {
           is Long -> safe.putLong(key, value)
           is Float -> if (value.isFinite()) safe.putFloat(key, value)
           is Double -> if (value.isFinite()) safe.putDouble(key, value)
+          is ArrayList<*> -> {
+            val strings = value.filterIsInstance<String>()
+            if (strings.size == value.size) {
+              safe.putStringArrayList(
+                key,
+                ArrayList(
+                  strings.take(MAX_EXTRA_LIST_ITEMS).map { it.take(MAX_EXTRA_TEXT_CHARS) }
+                )
+              )
+            }
+          }
         }
       }
     return safe
@@ -97,6 +108,7 @@ internal object BrowseArtworkPolicy {
   internal const val MAX_TEXT_CHARS = 512
   private const val MAX_URI_CHARS = 2_048
   private const val MAX_EXTRAS = 16
+  private const val MAX_EXTRA_LIST_ITEMS = 8
   private const val MAX_EXTRA_KEY_CHARS = 128
   private const val MAX_EXTRA_TEXT_CHARS = 256
 }

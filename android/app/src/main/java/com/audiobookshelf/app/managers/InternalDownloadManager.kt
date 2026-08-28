@@ -23,11 +23,11 @@ class InternalDownloadManager(
       mutableSetOf<InternalDownloadManager>()
     )
 
-    fun cancelForConnection(connectionId: String) {
+    fun cancelForConnection(connectionId: String): Boolean {
       val matching = synchronized(active) {
         active.filter { it.connectionId == connectionId }
       }
-      matching.forEach { manager -> runCatching { manager.close() } }
+      return matching.map { manager -> runCatching { manager.close() }.isSuccess }.all { it }
     }
   }
 

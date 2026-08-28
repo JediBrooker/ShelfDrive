@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.support.v4.media.MediaBrowserCompat
 import android.support.v4.media.MediaDescriptionCompat
+import androidx.media.utils.MediaConstants
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -140,6 +141,28 @@ class BrowseArtworkPolicyTest {
     assertEquals(0.5, result.extras!!.getDouble("progress"), 0.0)
     assertNull(result.extras!!.getParcelable<Bitmap>("untrusted"))
     assertNull(result.mediaUri)
+  }
+
+  @Test
+  fun `custom browse action string lists survive the binder safety boundary`() {
+    val actionKey = MediaConstants.DESCRIPTION_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ID_LIST
+    val extras = Bundle().apply {
+      putStringArrayList(actionKey, arrayListOf("download", "cancel", "remove"))
+    }
+    val item = MediaBrowserCompat.MediaItem(
+      MediaDescriptionCompat.Builder()
+        .setMediaId("book")
+        .setExtras(extras)
+        .build(),
+      MediaBrowserCompat.MediaItem.FLAG_PLAYABLE
+    )
+
+    val result = BrowseArtworkPolicy.sanitize(listOf(item), applicationId).single()
+
+    assertEquals(
+      listOf("download", "cancel", "remove"),
+      result.description.extras?.getStringArrayList(actionKey)
+    )
   }
 
   private fun mediaItem(iconUri: Uri? = null): MediaBrowserCompat.MediaItem {

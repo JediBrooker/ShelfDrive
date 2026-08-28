@@ -50,6 +50,7 @@ class DbManager {
     private const val MAX_LOG_ENTRIES = 1_000
     private const val LOG_PRUNE_INTERVAL = 50
 
+    @Synchronized
     fun initialize(ctx: Context) {
       if (isDbInitialized) return
       Paper.init(ctx)

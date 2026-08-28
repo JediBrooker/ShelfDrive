@@ -59,6 +59,7 @@ class ShelfDriveAccountAuthenticatorTest {
     val intent = result.getParcelable<Intent>(AccountManager.KEY_INTENT)
     assertNotNull(intent)
     assertEquals(SettingsActivity::class.java.name, intent?.component?.className)
+    assertEquals(ShelfDriveAccountContract.ACTION_AUTHENTICATOR_SIGN_IN, intent?.action)
     assertTrue(intent?.flags?.and(Intent.FLAG_ACTIVITY_NEW_TASK) != 0)
     assertFalse(result.containsKey(AccountManager.KEY_AUTHTOKEN))
   }

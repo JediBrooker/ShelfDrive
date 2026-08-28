@@ -12,24 +12,24 @@
     <FrameLayout
         android:id="@+id/toolbarContainer"
         android:layout_width="match_parent"
-        android:layout_height="88dp">
+        android:layout_height="96dp">
 
         <ImageView
             android:id="@+id/backButton"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
+            android:layout_width="76dp"
+            android:layout_height="76dp"
             android:layout_gravity="center_vertical|start"
-            android:layout_marginStart="20dp"
+            android:layout_marginStart="8dp"
             android:background="?attr/selectableItemBackgroundBorderless"
-            android:src="@drawable/ic_arrow_back_24"
+            android:src="@drawable/ic_close_32"
             android:scaleType="center"
-            android:contentDescription="@string/settings_back" />
+            android:contentDescription="@string/settings_close" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="center_vertical|start"
-            android:layout_marginStart="92dp"
+            android:layout_marginStart="104dp"
             android:text="@string/settings_title"
             android:textColor="#FFFFFF"
             android:textSize="32sp"
@@ -64,7 +64,7 @@
                 android:padding="16dp"
                 android:background="#1F262B"
                 android:textColor="#FF7E2D"
-                android:textSize="15sp"
+                android:textSize="24sp"
                 android:text="@string/settings_parked_only" />
 
             <!-- Server section -->
@@ -114,7 +114,7 @@
                 android:paddingEnd="32dp"
                 android:paddingTop="16dp"
                 android:textColor="@color/settings_status_info"
-                android:textSize="18sp"
+                android:textSize="24sp"
                 android:accessibilityLiveRegion="polite"
                 android:text="" />
 
@@ -150,6 +150,17 @@
                 android:text="@string/settings_section_privacy" />
 
             <TextView
+                android:id="@+id/privacyPolicySummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:paddingBottom="16dp"
+                android:text="@string/privacy_policy_summary"
+                android:textColor="#B8C0C7"
+                android:textSize="24sp" />
+
+            <TextView
                 android:id="@+id/privacyPolicyButton"
                 style="@style/SettingsButton.Outlined"
                 android:layout_gravity="end"
@@ -157,7 +168,101 @@
                 android:layout_marginEnd="32dp"
                 android:layout_marginTop="16dp"
                 android:layout_marginBottom="16dp"
-                android:text="@string/settings_privacy_policy" />
+                android:text="@string/privacy_policy_view_online" />
+
+            <View style="@style/SettingsSectionDivider" />
+
+            <!-- Offline audiobook management is intentionally parked-only with
+                 the rest of this Activity. Downloads themselves are started
+                 from a book's AAOS custom browse action. -->
+            <TextView
+                style="@style/SettingsSectionHeader"
+                android:text="@string/settings_section_offline" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:paddingBottom="16dp"
+                android:text="@string/settings_offline_help"
+                android:textColor="#B8C0C7"
+                android:textSize="24sp" />
+
+            <TextView
+                android:id="@+id/offlineSummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:paddingBottom="16dp"
+                android:accessibilityLiveRegion="polite"
+                android:text="@string/settings_offline_summary_loading"
+                android:textColor="@color/settings_status_info"
+                android:textSize="24sp" />
+
+            <TextView
+                android:id="@+id/offlineCurrentBookSummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:paddingBottom="16dp"
+                android:accessibilityLiveRegion="polite"
+                android:text="@string/settings_offline_current_book_none"
+                android:textColor="#B8C0C7"
+                android:textSize="24sp" />
+
+            <TextView
+                android:id="@+id/downloadCurrentBookButton"
+                style="@style/SettingsButton.Primary"
+                android:layout_gravity="end"
+                android:layout_marginStart="32dp"
+                android:layout_marginEnd="32dp"
+                android:layout_marginBottom="16dp"
+                android:enabled="false"
+                android:text="@string/settings_offline_download_current" />
+
+            <LinearLayout style="@style/SettingsRow">
+                <TextView
+                    style="@style/SettingsRowLabel"
+                    android:labelFor="@id/offlineMeteredSwitch"
+                    android:text="@string/settings_offline_allow_metered" />
+                <com.google.android.material.materialswitch.MaterialSwitch
+                    android:id="@+id/offlineMeteredSwitch"
+                    android:layout_width="76dp"
+                    android:layout_height="76dp"
+                    android:gravity="center" />
+            </LinearLayout>
+
+            <View style="@style/SettingsRowDivider" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingStart="32dp"
+                android:paddingEnd="32dp"
+                android:paddingTop="16dp"
+                android:paddingBottom="16dp"
+                android:gravity="end">
+
+                <TextView
+                    android:id="@+id/cancelAllDownloadsButton"
+                    style="@style/SettingsButton.Outlined"
+                    android:enabled="false"
+                    android:text="@string/settings_offline_cancel_all" />
+
+                <Space
+                    android:layout_width="16dp"
+                    android:layout_height="match_parent" />
+
+                <TextView
+                    android:id="@+id/deleteAllDownloadsButton"
+                    style="@style/SettingsButton.Outlined"
+                    android:enabled="false"
+                    android:text="@string/settings_offline_delete_all" />
+            </LinearLayout>
 
             <View style="@style/SettingsSectionDivider" />
 
@@ -188,8 +293,9 @@
                 <TextView style="@style/SettingsRowLabel" android:text="@string/settings_disable_auto_rewind" />
                 <com.google.android.material.materialswitch.MaterialSwitch
                     android:id="@+id/disableAutoRewindSwitch"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content" />
+                    android:layout_width="76dp"
+                    android:layout_height="76dp"
+                    android:gravity="center" />
             </LinearLayout>
 
             <View

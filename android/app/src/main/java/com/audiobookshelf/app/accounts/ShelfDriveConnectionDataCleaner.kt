@@ -6,6 +6,8 @@ import android.util.Log
 import com.audiobookshelf.app.data.DeviceData
 import com.audiobookshelf.app.data.ServerConnectionConfig
 import com.audiobookshelf.app.device.DeviceManager
+import com.audiobookshelf.app.downloads.OfflineDownloadPlanner
+import com.audiobookshelf.app.downloads.OfflineDownloadCoordinator
 import com.audiobookshelf.app.managers.DbManager
 import com.audiobookshelf.app.managers.RefreshTokenStorage
 import com.audiobookshelf.app.managers.SecureStorage
@@ -54,22 +56,46 @@ private object DeviceManagerConnectionDataPersistence : ConnectionDataPersistenc
         DeviceManager.dbManager.saveLocalMediaProgress(progress)
       }
 
-    // Pending rows can contain legacy token-bearing download URLs. Cancel any
-    // system/internal transfer before deleting the entire owner-scoped row.
+    // Pending rows can contain bearer-authenticated platform requests or
+    // legacy token-bearing URLs. Retain the purge tombstone and ownership row
+    // until cancellation is confirmed; an orphan must never outlive Logout.
+    val internalCanceled = InternalDownloadManager.cancelForConnection(connectionId)
+    val managedCanceled = OfflineDownloadCoordinator(appContext)
+      .removeManagedJobsForConnection(connectionId)
     val downloadManager = appContext.getSystemService(Context.DOWNLOAD_SERVICE) as? DownloadManager
+    var legacyCanceled = true
     DeviceManager.dbManager.getDownloadItems()
       .filter { it.serverConnectionConfigId == connectionId }
+      .filterNot(OfflineDownloadPlanner::isManagedJob)
       .forEach { item ->
+        var itemCanceled = true
         item.downloadItemParts.forEach { part ->
           if (!part.isInternalStorage) {
             part.downloadId?.takeIf { it > 0L }?.let { id ->
-              runCatching { downloadManager?.remove(id) }
+              if (downloadManager == null || !removePlatformRow(downloadManager, id)) {
+                itemCanceled = false
+              }
             }
           }
         }
-        DeviceManager.dbManager.removeDownloadItem(item.id)
+        if (itemCanceled) {
+          DeviceManager.dbManager.removeDownloadItem(item.id)
+        } else {
+          legacyCanceled = false
+        }
       }
-    InternalDownloadManager.cancelForConnection(connectionId)
+    if (!internalCanceled || !managedCanceled || !legacyCanceled) {
+      throw IllegalStateException("Pending download cancellation will be retried")
+    }
+  }
+
+  private fun removePlatformRow(downloadManager: DownloadManager, id: Long): Boolean {
+    val removed = runCatching { downloadManager.remove(id) }.getOrNull()
+    if (removed != null && removed > 0) return true
+    val cursor = runCatching {
+      downloadManager.query(DownloadManager.Query().setFilterById(id))
+    }.getOrNull() ?: return false
+    return cursor.use { !it.moveToFirst() }
   }
 }
 
@@ -220,16 +246,18 @@ internal class ShelfDriveConnectionDataCleaner(
       val prefs = appContext.getSharedPreferences(PURGE_PREFS, Context.MODE_PRIVATE)
       val pending = prefs.getStringSet(PURGE_IDS, emptySet()).orEmpty().toList()
       pending.forEach { connectionId ->
-        if (DeviceManager.getServerConnectionConfig(connectionId) != null) {
-          ShelfDriveConnectionDataCleaner(appContext).removeConnectionData(connectionId)
-          return@forEach
-        }
-        try {
-          DeviceManagerConnectionDataPersistence.initialize(appContext)
-          DeviceManagerConnectionDataPersistence.removeAncillaryConnectionData(connectionId)
-          clearPendingPurge(appContext, connectionId)
-        } catch (error: RuntimeException) {
-          Log.e(TAG, "Pending connection purge remains deferred", error)
+        synchronized(DeviceManager.connectionPersistenceMonitor) {
+          if (DeviceManager.getServerConnectionConfig(connectionId) != null) {
+            ShelfDriveConnectionDataCleaner(appContext).removeConnectionData(connectionId)
+            return@synchronized
+          }
+          try {
+            DeviceManagerConnectionDataPersistence.initialize(appContext)
+            DeviceManagerConnectionDataPersistence.removeAncillaryConnectionData(connectionId)
+            clearPendingPurge(appContext, connectionId)
+          } catch (error: RuntimeException) {
+            Log.e(TAG, "Pending connection purge remains deferred", error)
+          }
         }
       }
     }

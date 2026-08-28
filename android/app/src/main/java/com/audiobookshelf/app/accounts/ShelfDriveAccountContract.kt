@@ -14,6 +14,9 @@ object ShelfDriveAccountContract {
   /** Build-specific so debug and Play-signed installs cannot claim each other's accounts. */
   @JvmField
   val ACCOUNT_TYPE = "${BuildConfig.APPLICATION_ID}.account"
+  @JvmField
+  val ACTION_AUTHENTICATOR_SIGN_IN =
+    "${BuildConfig.APPLICATION_ID}.action.AUTHENTICATOR_SIGN_IN"
 
   const val USER_DATA_CONNECTION_ID = "shelfdrive.connection_id"
   const val USER_DATA_DISPLAY_NAME = "shelfdrive.display_name"

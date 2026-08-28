@@ -1,7 +1,7 @@
 # ShelfDrive — Google Play listing draft
 
 Candidate listing copy for package `com.jedibk.shelfdrive`. Confirm every
-feature against the final v130 Play-delivered build before pasting it into Play
+feature against the final v131 Play-delivered build before pasting it into Play
 Console.
 
 ## App name
@@ -36,6 +36,7 @@ ShelfDrive
 > Playback controls
 >
 > • Stream audio from your configured server
+> • Download audiobooks for offline listening, with cancel and remove controls
 > • Adjustable jump-forward and jump-back intervals
 > • Playback-speed controls
 >
@@ -61,17 +62,19 @@ ShelfDrive
 > ShelfDrive is independently published and is not affiliated with or endorsed
 > by the Audiobookshelf project.
 
-Before use, verify the exact browse labels, media-search behavior, playback
-speed, and jump controls against the final v130 release. Remove any line that is
+Before use, verify the exact browse labels, media-search behavior, playback,
+offline download, speed, and jump controls against the final v131 release. Remove any line that is
 not exercised successfully.
 
-## Release notes for version code 130
+## Release notes for version code 131
 
 > • Fixed an Android Automotive OS media-service startup race that could cause
 >   repeated crashes when a network was already active
 > • Improved media-service lifecycle, browse, search, network, and malformed
 >   response handling
 > • Added a clear pre-sign-in data disclosure and an in-app privacy summary
+> • Added offline audiobook downloads using Android's system Download Manager,
+>   including parked fallback, cancel, delete, and offline playback
 > • Restricted production server connections to HTTPS
 > • Improved artwork caching and fallback behavior for the system media UI
 
@@ -94,11 +97,8 @@ reviewer can access.
 Planned URL:
 `https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY`
 
-**Submission blocker:** as of 28 August 2026, that URL serves an older policy
-that says no personal data is transmitted to any third party, despite the app
-transmitting it to a configured server that can be third-party operated.
-Publish the current [`docs/PRIVACY_POLICY.md`](docs/PRIVACY_POLICY.md) and
-verify the public page before using this URL in a submission.
+Publish the current [`docs/PRIVACY_POLICY.md`](docs/PRIVACY_POLICY.md), then
+verify the public page without sign-in before using this URL in a submission.
 
 ## Listing assets
 
@@ -134,9 +134,10 @@ server address, username, password, or token.
 > must affirmatively select **Continue and sign in** before transmission begins.
 > Production builds require HTTPS.
 >
-> Version 130 fixes the version 129 startup crash by constructing the media
+> Version 131 fixes the version 129 startup crash by constructing the media
 > manager before Android can invoke the registered network callback. Exact
-> access steps and the verification-backed response are supplied separately.
+> access steps, including offline download/playback, and the verification-backed
+> response are supplied separately.
 
 ## Official listing references
 

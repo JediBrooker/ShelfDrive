@@ -6,6 +6,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.NetworkInfo
 import android.net.Uri
+import android.os.Bundle
 import android.os.Process
 import android.view.KeyEvent
 import com.audiobookshelf.app.data.AudioTrack
@@ -117,6 +118,44 @@ class PlayerNotificationServiceStartupTest {
     assertTrue(actions and PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID != 0L)
     assertTrue(actions and PlaybackStateCompat.ACTION_PREPARE_FROM_SEARCH != 0L)
     assertTrue(actions and PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH != 0L)
+
+    controller.destroy()
+  }
+
+  @Test
+  fun customOfflineBrowseActionsPublishAllDefinitionsForAnyPositivePerItemLimit() {
+    val controller = Robolectric.buildService(PlayerNotificationService::class.java).create()
+    val service = controller.get()
+
+    fun rootWithLimit(limit: Int) = service.onGetRoot(
+      service.packageName,
+      Process.myUid(),
+      Bundle().apply {
+        putInt(MediaConstants.BROWSER_ROOT_HINTS_KEY_CUSTOM_BROWSER_ACTION_LIMIT, limit)
+      }
+    )
+
+    val unsupported = rootWithLimit(0)
+    val oneAction = rootWithLimit(1)
+    val allActions = rootWithLimit(3)
+
+    assertNull(
+      unsupported?.extras?.getParcelableArrayList<Bundle>(
+        MediaConstants.BROWSER_SERVICE_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ROOT_LIST
+      )
+    )
+    assertEquals(
+      3,
+      oneAction?.extras?.getParcelableArrayList<Bundle>(
+        MediaConstants.BROWSER_SERVICE_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ROOT_LIST
+      )?.size
+    )
+    assertEquals(
+      3,
+      allActions?.extras?.getParcelableArrayList<Bundle>(
+        MediaConstants.BROWSER_SERVICE_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ROOT_LIST
+      )?.size
+    )
 
     controller.destroy()
   }

@@ -1,375 +1,176 @@
-# ShelfDrive v130 — Google Play resubmission checklist
+# ShelfDrive v131 — Google Play resubmission checklist
 
-This checklist is for package `com.jedibk.shelfdrive`, version code **130**.
-Do not reuse it for version 129. A box means that the item still requires a
-human action or final verification; unchecked items must not be represented to
-Google as complete.
+This checklist is for package `com.jedibk.shelfdrive`, version code **131**,
+target SDK 35. Do not reuse the v129 or v130 artifact, hashes, screenshots, or
+verification claims.
 
-## Stop: submission blockers
+## External submission blockers
 
-Do not upload or submit v130 until every item in this section is complete.
+The repository and release artifact can be completed locally, but these items
+must be completed in the correct Play Console listing before submission:
 
-- [ ] **Open the correct Play Console app.** This release and the rejection are
-      for `com.jedibk.shelfdrive`. Do not upload it to or edit declarations for
-      the separate `com.jedibrooker.shelfdrive` listing. Confirm the package ID
-      in the Console URL/app dashboard before changing any declaration.
-- [ ] **Publish the updated privacy policy.** The public URL currently used by
-      the app and Play Console,
-      `https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY`, still serves an
-      older May 2026 policy that says ShelfDrive does not transmit personal
-      data to any third party, despite transmitting it to the configured server
-      (which can be operated by a third party). Publish
-      [`../docs/PRIVACY_POLICY.md`](../docs/PRIVACY_POLICY.md) to that exact
-      HTTPS URL, then verify the public page in a signed-out browser. Until
-      then, the privacy-policy requirement is not complete.
-- [x] **Verify the complete AAOS screenshot set against the final release.** The
-      four current PNGs in `screenshots-aaos-play/` use the generic AAOS UI,
-      contain no third-party cover art or private credentials, have the exact
-      required portrait/landscape dimensions, and are 24-bit RGB PNGs without
-      alpha. Before upload, compare them with the final Play candidate and
-      recapture any screen whose visible UI has changed. Any added browse or
-      playback screenshots must use only original, licensed, or documented
-      public-domain test media; keep the applicable licence/source record.
-- [x] **Complete the final v130 verification run.** The clean unit-test,
-      release-lint, release-build, artifact-inspection, and repeated AAOS
-      startup/rebind checks must all pass. Record the results below; do not
-      paste the reviewer response before this is done.
-- [ ] **Provision and test reviewer access.** The HTTPS demo server and account
-      must remain available for the entire review, require no MFA/VPN/IP
-      allowlist, and contain rights-cleared test media.
-- [ ] **Correct Play Console declarations.** Replace any prior “No data
-      collected” answer with the Data Safety answers below, update App access,
-      and confirm that all declarations match the published privacy policy and
-      the v130 app.
-- [ ] **Remove the stale foreground-service declaration.** V130 declares no
-      `FOREGROUND_SERVICE` permission or foreground-service type and does not
-      call `startForeground`. Do not submit
-      `play-console/shelfdrive-media-playback-declaration.mp4`, its raw video,
-      or `play-console/shelfdrive-media-playback.ass` as evidence for v130.
-      Remove/answer No to the old media-playback FGS declaration as Play Console
-      permits, and verify that no older bundle with that permission remains in
-      an active test or production release.
+- [ ] Confirm the listing package is `com.jedibk.shelfdrive`, not the separate
+  `com.jedibrooker.shelfdrive` package.
+- [ ] Keep the public privacy policy available without sign-in at
+  `https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY` and verify the
+  published page contains the 28 August 2026 policy naming JediBkApps.
+- [ ] Provision a public HTTPS Audiobookshelf reviewer account with no MFA,
+  VPN, invitation, IP allowlist, or location restriction and at least one
+  rights-cleared downloadable audiobook.
+- [ ] Save the tested credentials and exact navigation steps from
+  `PLAY_REVIEW_RESPONSE_V131.md` in **App access**. Never commit the password.
+- [ ] Correct Data Safety as described below; “No data collected” is not
+  consistent with this app.
+- [ ] Remove the stale foreground-service declaration in Play Console. Do not
+  submit the historical media-playback declaration video.
+- [ ] Recapture/verify the required generic-AAOS screenshots against v131. The
+  Settings and offline-download UI changed after the v130 captures.
+- [ ] Upload only the final verified v131 AAB to an internal track, install the
+  Play-delivered build, and resolve every actionable Pre-launch report or
+  policy warning before production submission.
 
-## Rejection diagnosis and v130 correction
+## Rejection diagnosis and v131 correction
 
-The rejected v129 build was reproduced locally on Android Automotive OS. Three
-persisted local crash records showed the same startup failure within 91–191 ms
-of process start:
+The rejected v129 build had a reproducible service-startup race: it registered
+the connectivity callback before initializing `mediaManager`. A vehicle with
+an already-active network could immediately invoke the callback, causing an
+`UninitializedPropertyAccessException` and repeated bound-service restarts.
+The detailed local evidence remains in `V129_CRASH_EVIDENCE.md`.
 
-```text
-kotlin.UninitializedPropertyAccessException:
-lateinit property mediaManager has not been initialized
-```
+V131 preserves the initialization-order fix and adds defensive lifecycle,
+timeout, malformed-response, caller-scope, and browse-action handling. Offline
+audiobooks now use Android's system Download Manager. ShelfDrive persists
+ownership before platform handoff, performs redirect-disabled authenticated
+GET probes outside the global account lock, invalidates cancel/disconnect work,
+reconciles the exact completed platform ID, validates size/type/container, and
+atomically publishes a book only after all parts are complete. Custom browse
+actions provide Download/Cancel/Remove where supported; parked Settings offers
+**Download current audiobook** as the fallback on hosts without custom actions.
 
-Version 129 registered its `ConnectivityManager.NetworkCallback` before
-assigning the media service's `mediaManager`. When an already-active vehicle
-network caused Android to deliver an immediate callback, the callback accessed
-that uninitialized property. Android restarted the bound media service and the
-same race repeated.
+## Release identity and artifact requirements
 
-In v130, `PlayerNotificationService` constructs `mediaManager` before
-registering the network callback. The source also contains defensive service
-lifecycle, browse/search completion, malformed-data, and artwork-fetching
-hardening. These local records are not logs from Google's reviewer device; see
-[`V129_CRASH_EVIDENCE.md`](V129_CRASH_EVIDENCE.md) for the exact evidence and
-wording constraint.
-
-Use [`PLAY_REVIEW_RESPONSE_V130.md`](PLAY_REVIEW_RESPONSE_V130.md) only after
-all blocking checks and final verification fields in that document are
-complete.
-
-## Release identity and target API
-
-- Package: `com.jedibk.shelfdrive`
-- Version code: `130`
+- Application ID: `com.jedibk.shelfdrive`
+- Version code: `131`
 - Version name: `0.1`
-- Android Automotive OS only: `android.hardware.type.automotive` is required
-- Target SDK: `35` (Android 15)
-- Production cleartext traffic: disabled; configured servers must use HTTPS
+- Target SDK: `35`
+- Native Android Automotive OS only
+- `android.hardware.type.automotive` required
+- Production cleartext traffic disabled; configured servers must use HTTPS
+- No foreground-service permission, type, or `startForeground` call
+- No broad external-storage permission
+- Settings is parked-only and not distraction optimized
 
-Google's current schedule requires new Android Automotive OS apps and updates
-to target API 35 or higher starting **31 August 2026**. API 35 is therefore the
-correct target for this AAOS release even though the general mobile-app
-deadline advances to API 36 on that date.
+## Reproducible release gate
 
-Official source:
-https://support.google.com/googleplay/android-developer/answer/11926878
-
-## Build and verification
-
-Use JDK 21 and the same package/version that will be submitted. Do not upload a
-bundle merely because it compiled.
+Use JDK 21 from the `android` directory:
 
 ```bash
-cd android
-export JAVA_HOME="$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home"
-./gradlew clean testReleaseUnitTest lintRelease assembleRelease bundleRelease
-```
-
-The recorded final run used the broader command below so the debug-only source
-set and debug lint were verified at the same time:
-
-```bash
+JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home \
 ./gradlew --offline --no-daemon clean \
   :app:testDebugUnitTest :app:testReleaseUnitTest \
   :app:lintDebug :app:lintRelease \
   :app:assembleDebug :app:assembleRelease :app:bundleRelease
 ```
 
-The Play release is native AAOS-only: its release source set contains no web
-assets or Capacitor runtime, so Nuxt generation and `cap sync` are not release
-build prerequisites. Keeping Node out of the release build also prevents the
-legacy phone-web dependency graph from becoming part of the Play supply chain.
-Local debug builds can still use Capacitor when `node_modules` is present.
-For the broader local regression run used for this candidate, also run
-`testDebugUnitTest` and `assembleDebug` after `npm ci`.
+Then verify:
 
-Expected bundle:
-`android/app/build/outputs/bundle/release/app-release.aab`
+- [ ] All debug and release unit tests pass with no failures or skipped tests.
+- [ ] Debug and release lint finish with zero errors; review every warning.
+- [ ] `assembleDebug`, `assembleRelease`, and `bundleRelease` succeed.
+- [ ] Bundletool validates `android/app/build/outputs/bundle/release/app-release.aab`.
+- [ ] The merged release manifest reports package/version 131/target 35 and has
+  no FGS, broad-storage, phone-launcher, or cleartext declarations.
+- [ ] The download completion receiver requires
+  `android.permission.SEND_DOWNLOAD_COMPLETED_INTENTS`.
+- [ ] The signed APK and AAB use the expected upload certificate; record fresh
+  hashes in `PLAY_REVIEW_RESPONSE_V131.md`.
+- [ ] A fresh generic-AAOS install cold-binds the media browser and opens parked
+  Settings without a crash or ANR.
+- [ ] With the reviewer server, verify browse, search, stream, controls,
+  download, offline playback, cancel, remove, reconnect, and process restart.
 
-Final local candidate recorded on 2026-08-28 at 21:25 AEST:
+## Privacy policy and in-app disclosure
 
-- AAB SHA-256:
-  `aea613c3a18f903d019b8be16b2a7531778a218e6869f0cf8ed8be900587a34e`
-- APK SHA-256:
-  `0a7521f554ac5494813dd7726ff9feb97602172223227742dde9d1b890f1f5cb`
-- Signing certificate SHA-256:
-  `34eb31e2a7d852ab1153b769d957ba4bfb159b678e90d3b53b1c2ebb5f6ed506`
-- Bundletool 1.18.3 validation: passed
-- AAB-derived device split install: passed with `base-master`, `base-en`, and
-  `base-ldpi`, all signed by the certificate above
+V131 shows a readable policy summary directly in parked Settings, so a vehicle
+without a browser still has in-app privacy text. The optional button opens the
+complete public policy. The two-step inline sign-in flow names the destination
+server and discloses credentials, account/device identifiers, searches,
+playback actions, listening progress, and enabled background progress sync
+before any sign-in request is sent.
 
-Record the final run:
+The public policy must stay consistent with the release: downloaded audio and
+partials are stored on the vehicle; system Download Manager receives the bearer
+as an HTTPS header; endpoints must serve files directly because a later
+redirect can receive replayed headers; completed offline books remain until
+the user deletes them or clears app storage.
 
-- [x] `testDebugUnitTest` passed: 177 tests, zero failures or ignored tests
-- [x] `testReleaseUnitTest` passed: 165 tests, zero failures or ignored tests
-- [x] `lintDebug` and `lintRelease` passed; release lint reports zero errors and
-      60 classified non-blocking warnings
-- [x] `assembleDebug` and `assembleRelease` passed
-- [x] `bundleRelease` passed and Bundletool validation succeeded
-- [x] Final AAB resolves to package `com.jedibk.shelfdrive`, version code 130,
-      target SDK 35, and the intended signing certificate
-- [x] Final merged manifest contains the AAOS media service and parked-only
-      Settings activity, with no phone launcher, car launcher activity,
-      foreground-service permission, broad storage permission, or cleartext
-      opt-in
-- [x] Final release artifact contains no stale
-      `android.resource://com.jedibrooker.shelfdrive` reference
-- [x] A fresh AAB-derived split install and signed v129-to-v130 update both
-      survived 75/75 cold media-host binds, 15/15 complete network
-      loss/reconnect cycles, parked Settings launches, and service teardown on
-      a disposable generic API 33 AAOS emulator
-- [x] Signed-out transport handling survived 140 play, pause, next, previous,
-      fast-forward, rewind, and stop commands with the process and media
-      session remaining active
-- [ ] Authenticated browse, search, playback, pause/resume, jump
-      backward/forward, progress sync, and reconnect pass end to end against
-      the final public reviewer server and account
-- [ ] Media voice/search intents handle an exact seeded title, a general
-      play/resume request, no match, and signed-out/offline state without a
-      crash or indefinite loading state. Automated coverage passes; the final
-      authenticated end-to-end run still requires reviewer access.
-- [x] No new ShelfDrive crash-buffer entry, fatal exception, security
-      exception, or `lastanr` entry appeared during either final emulator run
-
-Release signing is configured through the gitignored
-`android/keystore.properties`. Keep the keystore and passwords outside this
-repository and backed up. Opt in to Play App Signing; the local key should be
-treated as the upload key.
-
-## Store listing and assets
-
-- App name: **ShelfDrive**
-- Category: **Music & Audio**
-- App: free
-- Form factor: **Android Automotive OS** only
-- Listing copy: [`../STORE_LISTING_DRAFT.md`](../STORE_LISTING_DRAFT.md)
-- 512 x 512 icon: `shelfdrive-play-icon-512.png`
-- 1024 x 500 feature graphic: `shelfdrive-feature-graphic-1024x500.png`
-- AAOS screenshots: `screenshots-aaos-play/`
-
-For a media app, AAOS screenshots are required under the current car-quality
-criteria. Google requires at least two portrait screenshots at 800 x 1280 and
-two landscape screenshots at 1024 x 768. They
-must come from the generic AAOS emulator/system UI, accurately show v130, and
-must not be OEM- or vehicle-specific.
-
-Screenshot acceptance check:
-
-- [x] At least 2 portrait images, exactly 800 x 1280
-- [x] At least 2 landscape images, exactly 1024 x 768
-- [x] Every screenshot is JPEG or 24-bit RGB PNG with no alpha channel and is
-      no larger than 8 MB
-- [x] Captured from the generic AAOS `Automotive Portrait` and `Automotive
-      (1024p landscape)` emulator profiles
-- [x] No Polestar, Volvo, or other OEM-specific UI/branding
-- [x] No real server URL, username, password, token, or other private data
-- [x] No commercial cover art, title, logo, or other third-party asset unless
-      written permission/licensing evidence is ready for Play review
-- [x] Screenshots match the final local v130 candidate and intended reviewer
-      path. Reconfirm the uploaded Play artifact's UI before submission.
-
-Official sources:
-
-- https://support.google.com/googleplay/android-developer/answer/9866151
-- https://developer.android.com/docs/quality-guidelines/car-app-quality
-- https://developer.android.com/training/cars/media/voice-actions
-- https://support.google.com/googleplay/android-developer/answer/9888072
-- https://support.google.com/googleplay/android-developer/answer/9898842
-
-## Play Console app-content answers
-
-### Privacy policy
-
-Use this URL only after the blocker at the top of this document is resolved:
-
-`https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY`
-
-The policy must remain public, non-geofenced, available without sign-in, and
-consistent with the app and Data Safety declaration. V130 also shows an in-app
-privacy summary and presents an affirmative disclosure before first sign-in to
-a configured server.
-
-Official source:
+Official Play privacy-policy guidance:
 https://support.google.com/googleplay/android-developer/answer/10144311
 
-### App access
+## Data Safety answers
 
-Choose **All or some functionality is restricted**. ShelfDrive requires a
-user-provided Audiobookshelf server and credentials. Add the exact URL,
-username, password, library name, and rights-cleared test title using the text
-in [`PLAY_REVIEW_RESPONSE_V130.md`](PLAY_REVIEW_RESPONSE_V130.md).
-
-The reviewer server must:
-
-- be reachable from a clean public network over HTTPS;
-- remain online through review;
-- require no MFA, VPN, invitation, location restriction, or IP allowlist;
-- permit browse, search, streaming playback, progress update, and reconnect;
-- contain only media that may lawfully appear in the app and screenshots.
-
-Never commit the reviewer password.
-
-### Data Safety
-
-**Do not answer “No data collected.”** Google defines collection as transmitting
-data off the device, regardless of whether it goes to the developer or a
-third-party server. ShelfDrive transmits data to the server selected by the
-user, so **Data collected = Yes**.
-
-Recommended v130 declaration, based on the current source and privacy policy:
+Do not answer “No data collected.” ShelfDrive transmits data off the vehicle to
+the Audiobookshelf server selected by the user. Confirm the current Console
+wording, then declare at least:
 
 | Play data type | Collected | Required | Ephemeral | Purposes |
 | --- | --- | --- | --- | --- |
 | Personal info → User IDs | Yes | Required | No | App functionality; Account management |
-| Device or other IDs → Device or other IDs | Yes | Required | No | App functionality |
+| Device or other IDs | Yes | Required | No | App functionality |
 | App activity → App interactions | Yes | Required | No | App functionality |
 | App activity → In-app search history | Yes | Optional | No | App functionality |
 | App activity → Other actions | Yes | Required | No | App functionality; Personalization |
 
-Mapping to behavior:
+Behavior mapping:
 
-- **User IDs:** username, server account/user ID, and authentication/session
-  identifiers used to sign in and keep the connection authenticated. The
-  password is transmitted during sign-in but is not retained by ShelfDrive.
-- **Device or other IDs:** random install-scoped app-instance identifier used
-  to identify playback sessions. Device model, Android version, and app
-  version are also sent as session/device details.
-- **App interactions:** library/browse requests and selected titles are sent to
-  the configured server as the user navigates.
-- **In-app search history:** search text is sent only when the user chooses to
-  search, so collection is optional.
-- **Other actions:** playback actions, listening position, progress, and
-  history support streaming, resume, synchronization, and personalized
-  Continue/Recent views.
+- User IDs include username, account/user ID, and authentication/session IDs.
+  The password is transmitted during sign-in but is not retained.
+- Device data includes a random install-scoped app-instance identifier plus
+  manufacturer/model, Android version, and ShelfDrive version.
+- App interactions include library/browse requests and selected titles.
+- Search text is sent only when the user searches.
+- Other actions include playback commands, listening position, progress, and
+  history used for resume and synchronization.
+- Data is encrypted in transit because production connections require HTTPS.
+- ShelfDrive cannot create or delete the external Audiobookshelf account.
+  Disconnect removes the local profile and credentials; server-side deletion
+  belongs to the configured server/operator.
 
-Security and sharing answers:
+Do not assume the “Data shared” answer. Select it from Google's current
+definitions and disclosure/consent exception after reviewing every active
+track under the listing. The declaration must cover the union of versions
+distributed to users.
 
-- **Encrypted in transit:** Yes. V130 release connections require HTTPS.
-- **Data shared:** No, based on Google's exception for a transfer caused by a
-  specific user-initiated action or by a prominent disclosure with affirmative
-  consent. ShelfDrive shows the destination server and data categories before
-  sign-in and requires **Continue and sign in**. The configured server
-  operator's role, retention, and deletion practices are still disclosed in
-  the app and privacy policy.
-- **Account deletion:** ShelfDrive cannot create an Audiobookshelf account and
-  does not operate the server account. Do not claim that ShelfDrive deletes the
-  external account. Users can disconnect to delete the local ShelfDrive
-  profile and credentials; server-side records/account deletion must be done
-  through the configured server or its operator. Answer any Console deletion
-  question according to its exact wording and this division of responsibility.
-
-The Play Console account owner remains responsible for confirming these
-answers against every version and SDK distributed under this listing. If any
-other active track contains different data behavior, the declaration must
-cover the union of all distributed versions.
-
-Official source:
+Official Data Safety guidance:
 https://support.google.com/googleplay/android-developer/answer/10787469
 
-### Remaining content declarations
+## Why the foreground-service declaration is stale
 
-- Ads: **No**
-- News app: **No**
-- Target audience: select the truthful intended audience; do not infer this
-  from the media currently on the review server
-- Content rating: complete the IARC questionnaire from actual app behavior and
-  accessible server content; do not pre-claim a rating
-- Account creation: the app does not offer account creation; it signs into an
-  externally managed Audiobookshelf account
+V131 does not run a foreground service. `PlayerNotificationService` is a bound
+AAOS `MediaBrowserService`, and offline transfers are owned by Android's system
+Download Manager. The final manifest must contain neither
+`FOREGROUND_SERVICE` nor `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, no service has an
+`android:foregroundServiceType`, and the source does not call
+`startForeground`.
 
-### Foreground service permissions
+If Play Console still shows an FGS questionnaire, it is retained Console state
+or comes from another artifact in an active track. Inspect every active bundle,
+remove the old declaration when Console permits, and do not add an FGS
+permission merely to satisfy the stale form.
 
-V130 does not use an Android foreground service: its final manifest must not
-contain `FOREGROUND_SERVICE` or `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, its media
-service has no `android:foregroundServiceType`, and the app does not call
-`startForeground`. Therefore the Play Console foreground-service permission
-declaration must not claim media playback for v130. The existing media-playback
-demo video and subtitle assets under `store/play-console/` are historical and
-must not be submitted as v130 evidence.
+Official FGS declaration guidance:
+https://support.google.com/googleplay/android-developer/answer/13392821
 
-If Play Console still asks about an FGS permission, inspect every artifact in
-every active track and the final merged v130 manifest before answering. Do not
-add a permission merely to make the declaration UI appear.
+## Final submission sequence
 
-Official sources:
+- [ ] Complete the release gate and evidence record.
+- [ ] Publish and verify the privacy page.
+- [ ] Complete Data Safety, App access, content declarations, and screenshots.
+- [ ] Upload v131 to an internal test track and install the Play-delivered build.
+- [ ] Repeat the reviewer path, including offline playback with networking off.
+- [ ] Resolve Pre-launch report, Android vitals, permissions, and policy issues.
+- [ ] Paste the v131 response only after every statement is supported.
+- [ ] Submit the Android Automotive OS update for review.
 
-- https://support.google.com/googleplay/android-developer/answer/13392821
-- https://support.google.com/googleplay/android-developer/answer/16559646
-
-## Reviewer test path
-
-Use the exact values configured in Play Console App access:
-
-1. Open ShelfDrive from the generic AAOS system media source list.
-2. Select **Sign in**. If Settings opens, keep the vehicle/emulator parked.
-3. Enter the supplied HTTPS server URL, username, and password, then select
-   **Sign In**.
-4. Read the data disclosure naming the supplied server and select
-   **Continue and sign in**.
-5. Return to ShelfDrive and open **Libraries → [LIBRARY] → Books → [TITLE]**.
-6. Start playback; verify play/pause, resume, jump backward, and jump forward.
-7. Return to the media root and exercise Continue/Recent and search.
-8. Exit and reopen the system media app, then reconnect the network and confirm
-   ShelfDrive restores without a crash.
-
-Use only labels and paths that were confirmed against the final release and
-reviewer account.
-
-## Release sequence
-
-- [ ] Resolve all blockers in this document
-- [ ] Upload the verified v130 AAB to an internal test track
-- [ ] Install the Play-delivered build on AAOS and rerun the reviewer path
-- [ ] Review the Pre-launch report, Android vitals, permissions, manifest, and
-      policy warnings; resolve every actionable item
-- [ ] Confirm the uploaded artifact still reports version code 130 and target
-      SDK 35
-- [ ] Save the tested credentials and exact access steps in Play Console
-- [ ] Paste the v130 response only after its verification placeholders are
-      complete
-- [ ] Submit the update for Android Automotive OS review
-
-No step in this document authorizes uploading, publishing the privacy page, or
-changing Play Console. Those external actions require the account owner's
-explicit approval.
+This repository workflow publishes source/privacy changes to GitHub. It does
+not authorize or claim a Play Console upload or production rollout.

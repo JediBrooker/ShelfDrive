@@ -1,8 +1,11 @@
 package com.audiobookshelf.app.player
 
 import android.app.*
+import android.content.BroadcastReceiver
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
 import android.graphics.Color
 import android.hardware.Sensor
@@ -18,6 +21,7 @@ import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.media.MediaBrowserServiceCompat
 import androidx.media.utils.MediaConstants
 import com.audiobookshelf.app.BuildConfig
@@ -29,6 +33,11 @@ import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.data.DeviceInfo
 import com.audiobookshelf.app.device.ConnectionLease
 import com.audiobookshelf.app.device.DeviceManager
+import com.audiobookshelf.app.downloads.OfflineDownloadCoordinator
+import com.audiobookshelf.app.downloads.OfflineBrowseSnapshot
+import com.audiobookshelf.app.downloads.OfflineDownloadResult
+import com.audiobookshelf.app.downloads.OfflineDownloadState
+import com.audiobookshelf.app.downloads.OfflinePlanFailure
 import com.audiobookshelf.app.managers.DbManager
 import com.audiobookshelf.app.managers.SecureStorage
 import com.audiobookshelf.app.managers.SleepTimerManager
@@ -56,6 +65,7 @@ import java.io.File
 import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl
@@ -87,6 +97,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     internal const val BROWSE_LOAD_TIMEOUT_MS = 7_500L
     internal const val BROWSE_RESULT_TIMEOUT_MS = 8_000L
     private const val MAX_SAVED_SESSION_RETRIES_PER_START = 50
+    private const val MAX_CACHED_BROWSE_ITEMS = 2_000
+    private const val OFFLINE_ACTION_TIMEOUT_MS = 8_000L
+    private const val ACTION_DOWNLOAD_OFFLINE =
+      "com.audiobookshelf.app.action.DOWNLOAD_OFFLINE"
+    private const val ACTION_CANCEL_OFFLINE_DOWNLOAD =
+      "com.audiobookshelf.app.action.CANCEL_OFFLINE_DOWNLOAD"
+    private const val ACTION_REMOVE_OFFLINE_DOWNLOAD =
+      "com.audiobookshelf.app.action.REMOVE_OFFLINE_DOWNLOAD"
 
     private val KNOWN_PLAYBACK_ARTWORK_SYSTEM_PACKAGES = listOf(
       "com.android.systemui",
@@ -107,6 +125,26 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
             service.refreshAndroidAutoBrowseTree(reason)
           }
         }
+      }
+    }
+
+    /**
+     * Stop a managed offline book before Settings removes its files. The
+     * callback always runs on the main thread after ExoPlayer has released its
+     * current media items; when the service is absent there is no live reader.
+     */
+    fun stopAnyManagedOfflinePlayback(afterStopped: () -> Unit) {
+      Handler(Looper.getMainLooper()).post {
+        val service = activeInstance?.get()
+        if (service != null && !service.serviceDestroyed) {
+          val local = service.currentPlaybackSession?.localLibraryItem
+          if (local != null && service::offlineDownloads.isInitialized &&
+            service.offlineDownloads.isManagedLocal(local)
+          ) {
+            service.closePlayback(false)
+          }
+        }
+        afterStopped()
       }
     }
   }
@@ -144,6 +182,24 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
   lateinit var mediaManager: MediaManager
   lateinit var apiHandler: ApiHandler
+  private lateinit var offlineDownloads: OfflineDownloadCoordinator
+  private var offlineDownloadReceiverRegistered = false
+
+  private val offlineDownloadChangedReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+      if (serviceDestroyed || intent?.action != OfflineDownloadCoordinator.ACTION_STATE_CHANGED) return
+      val libraryItemId = intent.getStringExtra(OfflineDownloadCoordinator.EXTRA_LIBRARY_ITEM_ID)
+      postToMainIfAlive {
+        notifyChildrenChanged(DOWNLOADS_ROOT)
+        notifyChildrenChanged(AUTO_MEDIA_ROOT)
+        libraryItemId?.let { id ->
+          synchronized(browseParentsByMediaId) {
+            browseParentsByMediaId[id]?.toList().orEmpty()
+          }.forEach(::notifyChildrenChanged)
+        }
+      }
+    }
+  }
 
   lateinit var mPlayer: ExoPlayer
   lateinit var currentPlayer: Player
@@ -324,6 +380,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     AbsLogger.info(tag, "refreshAndroidAutoBrowseTree: $reason")
     cachedSearch = ""
     cachedSearchResults.clear()
+    synchronized(cachedBrowseItems) { cachedBrowseItems.clear() }
+    synchronized(browseParentsByMediaId) { browseParentsByMediaId.clear() }
     browseResultTree.clear()
     clearPendingColdBrowseRestores()
     searchGeneration++
@@ -373,6 +431,10 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     // Invalidate asynchronous work before releasing any object it can touch.
     // Android/OEM callbacks may already be queued when teardown begins.
     serviceDestroyed = true
+    if (offlineDownloadReceiverRegistered) {
+      runCatching { unregisterReceiver(offlineDownloadChangedReceiver) }
+      offlineDownloadReceiverRegistered = false
+    }
     playbackListenerGeneration.incrementAndGet()
     if (this::mPlayer.isInitialized && this::playerListener.isInitialized) {
       runCatching { mPlayer.removeListener(playerListener) }
@@ -408,6 +470,9 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     browserResultConnectionEpochs.clear()
     browserResultConnectionIds.clear()
     completedBrowseResults.clear()
+    synchronized(cachedBrowseItems) { cachedBrowseItems.clear() }
+    synchronized(browseParentsByMediaId) { browseParentsByMediaId.clear() }
+    browserCustomActionLimits.clear()
     if (this::browseResultTree.isInitialized) browseResultTree.clearMemory()
     clearPendingColdBrowseRestores()
     clientEventEmitter = null
@@ -499,6 +564,19 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
 
     // Initialize Paper
     DbManager.initialize(ctx)
+    offlineDownloads = OfflineDownloadCoordinator(applicationContext)
+    ContextCompat.registerReceiver(
+      this,
+      offlineDownloadChangedReceiver,
+      IntentFilter(OfflineDownloadCoordinator.ACTION_STATE_CHANGED),
+      OfflineDownloadCoordinator.PERMISSION_STATE_CHANGED,
+      null,
+      ContextCompat.RECEIVER_NOT_EXPORTED
+    )
+    offlineDownloadReceiverRegistered = true
+    // System DownloadManager may have completed work while ShelfDrive's
+    // process was absent. Reconcile before the first Downloads browse.
+    offlineDownloads.reconcile()
     browseResultTree = BrowseResultTree(
       persistenceDirectory = File(noBackupFilesDir, "aaos-browse-ranges-v2"),
       scopeIdProvider = {
@@ -1875,6 +1953,18 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     java.util.Collections.synchronizedMap(java.util.WeakHashMap<Any, Long>())
   private val browserResultConnectionIds =
     java.util.Collections.synchronizedMap(java.util.WeakHashMap<Any, String?>())
+  private data class BrowseItemScope(
+    val callerPackage: String,
+    val connectionEpoch: Long,
+    val connectionId: String?
+  )
+  private data class CachedBrowseItem(
+    var item: MediaBrowserCompat.MediaItem,
+    val scopes: MutableSet<BrowseItemScope>
+  )
+  private val cachedBrowseItems = LinkedHashMap<String, CachedBrowseItem>()
+  private val browseParentsByMediaId = mutableMapOf<String, MutableSet<String>>()
+  private val browserCustomActionLimits = java.util.concurrent.ConcurrentHashMap<String, Int>()
 
   private fun rebuildBrowseTree() {
     browseTree =
@@ -2323,10 +2413,207 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
   }
 
+  private fun withOfflineBrowseActions(
+    items: List<MediaBrowserCompat.MediaItem>,
+    callerPackage: String?
+  ): MutableList<MediaBrowserCompat.MediaItem> {
+    val actionLimit = callerPackage?.let(browserCustomActionLimits::get) ?: 0
+    val allOfflineActionIds = offlineBrowseActionIds().toSet()
+    val stateSnapshot = if (actionLimit > 0 && this::offlineDownloads.isInitialized) {
+      offlineDownloads.browseSnapshot(currentBrowseServerConfigId())
+    } else {
+      null
+    }
+    val playableLegacyLocalIds = if (stateSnapshot != null) {
+      DeviceManager.dbManager.getLocalLibraryItems().asSequence()
+        .filter { it.id !in stateSnapshot.managedLocalIds && it.hasTracks(null) }
+        .map(LocalLibraryItem::id)
+        .toSet()
+    } else {
+      emptySet()
+    }
+    return items.map { item ->
+      val description = item.description
+      val actionId = if (actionLimit > 0 && stateSnapshot != null &&
+        this::mediaManager.isInitialized
+      ) {
+        // ShelfDrive currently attaches exactly one state-specific action per
+        // item, so every positive host per-item limit can represent it.
+        offlineActionFor(item, stateSnapshot, playableLegacyLocalIds)
+      } else {
+        null
+      }
+      val extras = Bundle(description.extras ?: Bundle()).apply {
+        val retained = getStringArrayList(
+          MediaConstants.DESCRIPTION_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ID_LIST
+        ).orEmpty().filterNot(allOfflineActionIds::contains).toMutableList()
+        actionId?.let(retained::add)
+        if (retained.isEmpty()) {
+          remove(MediaConstants.DESCRIPTION_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ID_LIST)
+        } else {
+          putStringArrayList(
+            MediaConstants.DESCRIPTION_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ID_LIST,
+            ArrayList(retained)
+          )
+        }
+      }
+      val decorated = MediaDescriptionCompat.Builder()
+        .setMediaId(description.mediaId)
+        .setTitle(description.title)
+        .setSubtitle(description.subtitle)
+        .setDescription(description.description)
+        .setIconBitmap(description.iconBitmap)
+        .setIconUri(description.iconUri)
+        .setMediaUri(description.mediaUri)
+        .setExtras(extras)
+        .build()
+      MediaBrowserCompat.MediaItem(decorated, item.flags)
+    }.toMutableList()
+  }
+
+  private fun offlineActionFor(
+    item: MediaBrowserCompat.MediaItem,
+    snapshot: OfflineBrowseSnapshot,
+    playableLegacyLocalIds: Set<String>
+  ): String? {
+    if (!item.isPlayable) return null
+    val mediaId = item.mediaId ?: return null
+    if (mediaId in snapshot.managedLocalIds) {
+      return ACTION_REMOVE_OFFLINE_DOWNLOAD
+    }
+    val remote = resolveRemoteAudiobook(mediaId) ?: return null
+    val connectionId = snapshot.connectionId ?: return null
+    return when (snapshot.state(remote.id)) {
+      OfflineDownloadState.NONE -> {
+        val retainedLegacyCopy = remote.localLibraryItemId in playableLegacyLocalIds
+        if (!retainedLegacyCopy) ACTION_DOWNLOAD_OFFLINE else null
+      }
+      OfflineDownloadState.FAILED -> ACTION_DOWNLOAD_OFFLINE
+      OfflineDownloadState.ACTIVE -> ACTION_CANCEL_OFFLINE_DOWNLOAD
+      OfflineDownloadState.DOWNLOADED -> ACTION_REMOVE_OFFLINE_DOWNLOAD
+    }
+  }
+
+  private fun resolveRemoteAudiobook(mediaId: String): LibraryItem? {
+    val item = mediaManager.getById(mediaId) ?: mediaManager.getFromSearch(mediaId)
+    return (item as? LibraryItem)?.takeIf {
+      it.mediaType == "book" && it.collapsedSeries == null && it.checkHasTracks()
+    }
+  }
+
+  private fun rememberBrowseItems(
+    parentMediaId: String,
+    items: List<MediaBrowserCompat.MediaItem>,
+    callerPackage: String?,
+    connectionEpoch: Long,
+    connectionId: String?
+  ) {
+    val scope = callerPackage?.let {
+      BrowseItemScope(it, connectionEpoch, connectionId)
+    } ?: return
+    synchronized(cachedBrowseItems) {
+      items.forEach { item ->
+        val mediaId = item.mediaId ?: return@forEach
+        val existing = cachedBrowseItems[mediaId]
+        if (existing != null) {
+          existing.item = item
+          existing.scopes += scope
+        } else {
+          cachedBrowseItems[mediaId] = CachedBrowseItem(item, mutableSetOf(scope))
+        }
+        while (cachedBrowseItems.size > MAX_CACHED_BROWSE_ITEMS) {
+          cachedBrowseItems.entries.iterator().let { iterator ->
+            if (iterator.hasNext()) {
+              val removedId = iterator.next().key
+              iterator.remove()
+              synchronized(browseParentsByMediaId) { browseParentsByMediaId.remove(removedId) }
+            }
+          }
+        }
+      }
+    }
+    synchronized(browseParentsByMediaId) {
+      items.forEach { item ->
+        item.mediaId?.let { mediaId ->
+          browseParentsByMediaId.getOrPut(mediaId) { mutableSetOf() }.add(parentMediaId)
+        }
+      }
+    }
+  }
+
+  private fun cachedBrowseItemForCaller(
+    mediaId: String,
+    callerPackage: String?
+  ): MediaBrowserCompat.MediaItem? {
+    val caller = callerPackage ?: return null
+    val scope = BrowseItemScope(
+      caller,
+      DeviceManager.currentConnectionStateEpoch(),
+      currentBrowseServerConfigId()
+    )
+    return synchronized(cachedBrowseItems) {
+      cachedBrowseItems[mediaId]?.takeIf { scope in it.scopes }?.item
+    }
+  }
+
+  private fun pruneCachedBrowseScopesForReconnect(callerPackage: String) {
+    val currentEpoch = DeviceManager.currentConnectionStateEpoch()
+    val removedIds = mutableListOf<String>()
+    synchronized(cachedBrowseItems) {
+      val iterator = cachedBrowseItems.entries.iterator()
+      while (iterator.hasNext()) {
+        val entry = iterator.next()
+        entry.value.scopes.removeAll { scope ->
+          scope.callerPackage == callerPackage || scope.connectionEpoch != currentEpoch
+        }
+        if (entry.value.scopes.isEmpty()) {
+          removedIds += entry.key
+          iterator.remove()
+        }
+      }
+    }
+    if (removedIds.isNotEmpty()) {
+      synchronized(browseParentsByMediaId) {
+        removedIds.forEach(browseParentsByMediaId::remove)
+      }
+    }
+  }
+
   private fun hasPlayableDownloads(): Boolean {
     return listOf("book", "podcast").any { mediaType ->
       DeviceManager.dbManager.getLocalLibraryItems(mediaType).any { localItem ->
-        localItem.media.getAudioTracks().isNotEmpty()
+        if (mediaType == "podcast") {
+          (localItem.media as? Podcast)?.episodes.orEmpty().any { episode ->
+            localItem.hasTracks(episode)
+          }
+        } else {
+          localItem.hasTracks(null)
+        }
+      }
+    }
+  }
+
+  /**
+   * A completed local session is itself a valid offline resume source. This is
+   * deliberately checked separately from the download index: disconnecting an
+   * account strips its server identity, and older app versions may have left a
+   * durable session whose local item row cannot be reconstructed until play.
+   */
+  private fun hasPlayableSavedLocalSession(): Boolean {
+    val session = DeviceManager.deviceData.lastPlaybackSession ?: return false
+    if (!session.isLocal || session.audioTracks.isEmpty()) return false
+    return session.audioTracks.all { track ->
+      if (!track.isLocal) return@all false
+      val uri = runCatching { Uri.parse(track.contentUrl) }.getOrNull() ?: return@all false
+      when (uri.scheme?.lowercase()) {
+        ContentResolver.SCHEME_FILE -> uri.path
+          ?.let(::File)
+          ?.let { file -> file.isFile && file.canRead() }
+          ?: false
+        ContentResolver.SCHEME_CONTENT -> runCatching {
+          contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false
+        }.getOrDefault(false)
+        else -> false
       }
     }
   }
@@ -2343,14 +2630,26 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     parentMediaId: String
   ) {
     val callerPackage = browserResultCallerPackages.remove(result)
-    sendChildren(result, items, parentMediaId, callerPackage)
+    val connectionEpoch = browserResultConnectionEpochs[result]
+      ?: DeviceManager.currentConnectionStateEpoch()
+    val connectionId = browserResultConnectionIds[result]
+    sendChildren(
+      result,
+      items,
+      parentMediaId,
+      callerPackage,
+      connectionEpoch,
+      connectionId
+    )
   }
 
   private fun sendChildren(
     result: Result<MutableList<MediaBrowserCompat.MediaItem>>,
     items: MutableList<MediaBrowserCompat.MediaItem>?,
     parentMediaId: String,
-    callerPackage: String?
+    callerPackage: String?,
+    connectionEpoch: Long = DeviceManager.currentConnectionStateEpoch(),
+    connectionId: String? = currentBrowseServerConfigId()
   ) {
     if (items.isNullOrEmpty()) {
       completeBrowseResult(result, items, parentMediaId)
@@ -2360,7 +2659,15 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     // to fetch them, but never expose those URLs (or bitmaps) to the AAOS host.
     val boundedItems = browseResultTree.replaceChildren(parentMediaId, items)
     prefetchCoversAndNotify(parentMediaId, boundedItems)
-    val safeItems = BrowseArtworkPolicy.sanitize(boundedItems)
+    val actionableItems = withOfflineBrowseActions(boundedItems, callerPackage)
+    val safeItems = BrowseArtworkPolicy.sanitize(actionableItems)
+    rememberBrowseItems(
+      parentMediaId,
+      safeItems,
+      callerPackage,
+      connectionEpoch,
+      connectionId
+    )
     grantCoverUriPermissions(safeItems, callerPackage)
     completeBrowseResult(result, safeItems, parentMediaId)
   }
@@ -2480,7 +2787,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       return DeviceManager.captureConnectionLease(ownerConfig) == null
     }
     if (hasSelectedServerForPlayback()) return false
-    return !hasPlayableDownloads()
+    return !hasPlayableDownloads() && !hasPlayableSavedLocalSession()
   }
 
   internal fun publishSignInRequiredForPlaybackIfNeeded(
@@ -2563,26 +2870,54 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
   }
 
+  private fun customOfflineBrowseActions(): ArrayList<Bundle> {
+    fun action(id: String, label: String, drawableRes: Int) = Bundle().apply {
+      val drawableName = resources.getResourceEntryName(drawableRes)
+      putString(MediaConstants.EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ID, id)
+      putString(MediaConstants.EXTRAS_KEY_CUSTOM_BROWSER_ACTION_LABEL, label)
+      putString(
+        MediaConstants.EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ICON_URI,
+        "android.resource://$packageName/drawable/$drawableName"
+      )
+    }
+    return arrayListOf(
+      action(
+        ACTION_DOWNLOAD_OFFLINE,
+        getString(R.string.offline_action_download),
+        R.drawable.ic_offline_download
+      ),
+      action(
+        ACTION_CANCEL_OFFLINE_DOWNLOAD,
+        getString(R.string.offline_action_cancel),
+        R.drawable.ic_offline_cancel
+      ),
+      action(
+        ACTION_REMOVE_OFFLINE_DOWNLOAD,
+        getString(R.string.offline_action_remove),
+        R.drawable.ic_offline_remove
+      )
+    )
+  }
+
+  private fun offlineBrowseActionIds(): List<String> = listOf(
+    ACTION_DOWNLOAD_OFFLINE,
+    ACTION_CANCEL_OFFLINE_DOWNLOAD,
+    ACTION_REMOVE_OFFLINE_DOWNLOAD
+  )
+
   override fun onGetRoot(
           clientPackageName: String,
           clientUid: Int,
           rootHints: Bundle?
   ): BrowserRoot? {
     if (serviceDestroyed) return null
-    // A new root can follow an account/server switch; never retain search
-    // results across browser sessions where they could expose stale titles.
-    cachedSearch = ""
-    cachedSearchResults.clear()
-    browseResultTree.clearMemory()
-    searchGeneration++
-    searchFuture?.cancel(true)
-    searchFuture = null
     // Verify that the specified package is allowed to access your content
     return if (!isValid(clientPackageName, clientUid)) {
       // No further calls will be made to other media browsing methods.
       null
     } else {
       AbsLogger.info(tag, "onGetRoot: accepted trusted media browser")
+      pruneCachedBrowseScopesForReconnect(clientPackageName)
       // Record only after package/UID validation, then immediately grant the
       // currently playing artwork in case this browser connected after the
       // MediaSession metadata was first published.
@@ -2609,6 +2944,17 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
               MediaConstants.DESCRIPTION_EXTRAS_KEY_CONTENT_STYLE_PLAYABLE,
               MediaConstants.DESCRIPTION_EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM
       )
+      val customActionLimit = rootHints?.getInt(
+        MediaConstants.BROWSER_ROOT_HINTS_KEY_CUSTOM_BROWSER_ACTION_LIMIT,
+        0
+      )?.coerceIn(0, offlineBrowseActionIds().size) ?: 0
+      browserCustomActionLimits[clientPackageName] = customActionLimit
+      if (customActionLimit > 0) {
+        extras.putParcelableArrayList(
+          MediaConstants.BROWSER_SERVICE_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ROOT_LIST,
+          customOfflineBrowseActions()
+        )
+      }
 
       BrowserRoot(AUTO_MEDIA_ROOT, extras)
     }
@@ -2691,7 +3037,7 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       val localBrowseItems: MutableList<MediaBrowserCompat.MediaItem> = mutableListOf()
 
       localBooks.forEach { localLibraryItem ->
-        if (localLibraryItem.media.getAudioTracks().isNotEmpty()) {
+        if (localLibraryItem.hasTracks(null)) {
           val progress = DeviceManager.dbManager.getLocalMediaProgress(localLibraryItem.id)
           val description = localLibraryItem.getMediaDescription(progress, ctx)
 
@@ -2704,12 +3050,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
       }
 
       localPodcasts.forEach { localLibraryItem ->
-        val mediaDescription = localLibraryItem.getMediaDescription(null, ctx)
-        localBrowseItems +=
-                MediaBrowserCompat.MediaItem(
-                        mediaDescription,
-                        MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
-                )
+        if ((localLibraryItem.media as? Podcast)?.episodes.orEmpty().any(localLibraryItem::hasTracks)) {
+          val mediaDescription = localLibraryItem.getMediaDescription(null, ctx)
+          localBrowseItems +=
+                  MediaBrowserCompat.MediaItem(
+                          mediaDescription,
+                          MediaBrowserCompat.MediaItem.FLAG_BROWSABLE
+                  )
+        }
       }
 
       sendChildren(result, localBrowseItems, parentMediaId)
@@ -3427,6 +3775,249 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
     }
   }
 
+  /**
+   * Custom browse actions require the service to be able to reload the exact
+   * item the host is about to mutate. Only return items produced during this
+   * validated browser session; never reconstruct a remote item from an
+   * untrusted media ID supplied by the caller.
+   */
+  override fun onLoadItem(
+    itemId: String,
+    result: Result<MediaBrowserCompat.MediaItem>
+  ) {
+    if (serviceDestroyed) {
+      result.sendResult(null)
+      return
+    }
+    val callerPackage = currentBrowserPackageName()
+    val cached = cachedBrowseItemForCaller(itemId, callerPackage)
+    if (cached == null) {
+      result.sendResult(null)
+      return
+    }
+    val local = DeviceManager.dbManager.getLocalLibraryItem(itemId)
+    if (itemId.startsWith("local") && (local == null || !local.hasTracks(null))) {
+      result.sendResult(null)
+      return
+    }
+    val refreshed = BrowseArtworkPolicy.sanitize(
+      withOfflineBrowseActions(listOf(cached), callerPackage)
+    ).firstOrNull()
+    if (refreshed == null) {
+      result.sendResult(null)
+      return
+    }
+    grantCoverUriPermissions(listOf(refreshed), callerPackage)
+    result.sendResult(refreshed)
+  }
+
+  override fun onCustomAction(
+    action: String,
+    extras: Bundle?,
+    result: Result<Bundle>
+  ) {
+    if (serviceDestroyed) {
+      result.sendError(offlineActionResultBundle(null, R.string.offline_result_failed))
+      return
+    }
+    val mediaId = extras?.getString(
+      MediaConstants.EXTRAS_KEY_CUSTOM_BROWSER_ACTION_MEDIA_ITEM_ID
+    )?.takeIf(String::isNotBlank)
+    val callerPackage = currentBrowserPackageName()
+    val cached = mediaId?.let { id -> cachedBrowseItemForCaller(id, callerPackage) }
+    if (mediaId == null || cached == null) {
+      result.sendError(offlineActionResultBundle(mediaId, R.string.offline_result_invalid_item))
+      return
+    }
+    val actionLimit = callerPackage?.let(browserCustomActionLimits::get) ?: 0
+    val currentActionIds = if (actionLimit > 0) {
+      withOfflineBrowseActions(listOf(cached), callerPackage).firstOrNull()
+        ?.description?.extras?.getStringArrayList(
+          MediaConstants.DESCRIPTION_EXTRAS_KEY_CUSTOM_BROWSER_ACTION_ID_LIST
+        ).orEmpty()
+    } else {
+      emptyList()
+    }
+    // Bind the mutation to the action currently attached to this exact item.
+    // A delayed/replayed host callback cannot cancel or remove a new state.
+    if (action !in offlineBrowseActionIds() || action !in currentActionIds) {
+      result.sendError(offlineActionResultBundle(mediaId, R.string.offline_result_invalid_item))
+      return
+    }
+
+    when (action) {
+      ACTION_DOWNLOAD_OFFLINE -> handleOfflineDownload(mediaId, result)
+      ACTION_CANCEL_OFFLINE_DOWNLOAD -> handleOfflineCancel(mediaId, result)
+      ACTION_REMOVE_OFFLINE_DOWNLOAD -> handleOfflineRemove(mediaId, result)
+      else -> result.sendError(
+        offlineActionResultBundle(mediaId, R.string.offline_result_invalid_item)
+      )
+    }
+  }
+
+  private fun handleOfflineDownload(mediaId: String, result: Result<Bundle>) {
+    val remote = resolveRemoteAudiobook(mediaId)
+    val config = DeviceManager.serverConnectionConfig
+    val lease = DeviceManager.captureConnectionLease(config)
+    if (remote == null) {
+      result.sendError(offlineActionResultBundle(mediaId, R.string.offline_result_invalid_item))
+      return
+    }
+    if (config == null || lease == null || config.id != currentBrowseServerConfigId()) {
+      result.sendError(
+        offlineActionResultBundle(mediaId, R.string.offline_result_sign_in_required)
+      )
+      return
+    }
+
+    runOfflineAction(mediaId, result) { claimMutation, complete ->
+      apiHandler.getLibraryItemWithProgress(remote.id, null, config) { expanded ->
+        if (!DeviceManager.isConnectionLeaseCurrent(lease)) {
+          complete(OfflineDownloadResult.FAILED, OfflinePlanFailure.INVALID_SERVER)
+          return@getLibraryItemWithProgress
+        }
+        val verified = expanded?.takeIf {
+          it.id == remote.id && it.mediaType == "book" && it.checkHasTracks()
+        }
+        if (verified == null) {
+          complete(OfflineDownloadResult.FAILED, OfflinePlanFailure.INCOMPLETE_SERVER_METADATA)
+        } else if (!claimMutation()) {
+          // The AAOS result deadline already won. Never start a hidden late
+          // transfer after telling the host that the action failed.
+          return@getLibraryItemWithProgress
+        } else {
+          offlineDownloads.enqueue(verified, config, lease, complete)
+        }
+      }
+    }
+  }
+
+  private fun handleOfflineCancel(mediaId: String, result: Result<Bundle>) {
+    val remote = resolveRemoteAudiobook(mediaId)
+    val config = DeviceManager.serverConnectionConfig
+    if (remote == null) {
+      result.sendError(offlineActionResultBundle(mediaId, R.string.offline_result_invalid_item))
+      return
+    }
+    if (config == null || config.id != currentBrowseServerConfigId()) {
+      result.sendError(
+        offlineActionResultBundle(mediaId, R.string.offline_result_sign_in_required)
+      )
+      return
+    }
+    runOfflineAction(mediaId, result) { claimMutation, complete ->
+      if (!claimMutation()) return@runOfflineAction
+      offlineDownloads.cancel(config.id, remote.id, complete)
+    }
+  }
+
+  private fun handleOfflineRemove(mediaId: String, result: Result<Bundle>) {
+    val directLocal = DeviceManager.dbManager.getLocalLibraryItem(mediaId)
+      ?.takeIf(offlineDownloads::isManagedLocal)
+    val remote = resolveRemoteAudiobook(mediaId)
+    val config = DeviceManager.serverConnectionConfig
+    val localId = directLocal?.id ?: if (remote != null && config != null) {
+      offlineDownloads.managedLocalId(config.id, remote.id)
+    } else {
+      null
+    }
+    if (localId == null) {
+      result.sendError(offlineActionResultBundle(mediaId, R.string.offline_result_invalid_item))
+      return
+    }
+    runOfflineAction(mediaId, result) { claimMutation, complete ->
+      if (!claimMutation()) return@runOfflineAction
+      if (currentPlaybackSession?.localLibraryItem?.id == localId) {
+        closePlayback(false)
+      }
+      offlineDownloads.removeLocal(localId, complete)
+    }
+  }
+
+  /** Complete a detached MediaBrowser action once, even when network or binder callbacks race. */
+  private fun runOfflineAction(
+    mediaId: String,
+    result: Result<Bundle>,
+    operation: (
+      claimMutation: () -> Boolean,
+      complete: (OfflineDownloadResult, OfflinePlanFailure?) -> Unit
+    ) -> Unit
+  ) {
+    result.detach()
+    val completed = AtomicBoolean(false)
+    val mutationClaimed = AtomicBoolean(false)
+    val actionGate = Any()
+    lateinit var timeout: Runnable
+    val claimMutation = claim@ {
+      synchronized(actionGate) {
+        if (completed.get()) return@claim false
+        mutationClaimed.set(true)
+        true
+      }
+    }
+    val complete: (OfflineDownloadResult, OfflinePlanFailure?) -> Unit =
+      complete@ { outcome: OfflineDownloadResult, _: OfflinePlanFailure? ->
+      mainHandler.post {
+        val firstCompletion = synchronized(actionGate) {
+          completed.compareAndSet(false, true)
+        }
+        if (!firstCompletion) return@post
+        mainHandler.removeCallbacks(timeout)
+        val message = offlineActionMessage(outcome)
+        val payload = offlineActionResultBundle(mediaId, message)
+        if (outcome == OfflineDownloadResult.FAILED) {
+          result.sendError(payload)
+        } else {
+          result.sendResult(payload)
+        }
+      }
+      Unit
+    }
+    timeout = Runnable {
+      val claimed = synchronized(actionGate) {
+        if (!completed.compareAndSet(false, true)) return@Runnable
+        mutationClaimed.get()
+      }
+      if (claimed) {
+        result.sendResult(
+          offlineActionResultBundle(mediaId, R.string.offline_result_processing)
+        )
+      } else {
+        result.sendError(
+          offlineActionResultBundle(mediaId, R.string.offline_result_failed)
+        )
+      }
+    }
+    mainHandler.postDelayed(timeout, OFFLINE_ACTION_TIMEOUT_MS)
+    try {
+      operation(claimMutation, complete)
+    } catch (error: Exception) {
+      Log.e(tag, "Offline custom action failed (${error.javaClass.simpleName})")
+      complete(OfflineDownloadResult.FAILED, OfflinePlanFailure.STORAGE_UNAVAILABLE)
+    }
+  }
+
+  private fun offlineActionMessage(outcome: OfflineDownloadResult): Int = when (outcome) {
+    OfflineDownloadResult.STARTED -> R.string.offline_result_started
+    OfflineDownloadResult.ALREADY_ACTIVE -> R.string.offline_result_already_active
+    OfflineDownloadResult.ALREADY_DOWNLOADED -> R.string.offline_result_already_downloaded
+    OfflineDownloadResult.CANCELED -> R.string.offline_result_canceled
+    OfflineDownloadResult.REMOVED -> R.string.offline_result_removed
+    OfflineDownloadResult.NOTHING_TO_DO -> R.string.offline_result_nothing_to_do
+    OfflineDownloadResult.FAILED -> R.string.offline_result_failed
+  }
+
+  private fun offlineActionResultBundle(mediaId: String?, messageRes: Int): Bundle =
+    Bundle().apply {
+      mediaId?.let {
+        putString(MediaConstants.EXTRAS_KEY_CUSTOM_BROWSER_ACTION_RESULT_REFRESH_ITEM, it)
+      }
+      putString(
+        MediaConstants.EXTRAS_KEY_CUSTOM_BROWSER_ACTION_RESULT_MESSAGE,
+        getString(messageRes)
+      )
+    }
+
   override fun onSearch(
           query: String,
           extras: Bundle?,
@@ -3464,7 +4055,14 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
         result.sendResult(mutableListOf())
         return
       }
-      val cached = cachedSearchResults.toMutableList()
+      val cached = withOfflineBrowseActions(cachedSearchResults, callerPackage)
+      rememberBrowseItems(
+        SEARCH_RESULTS_ROOT,
+        cached,
+        callerPackage,
+        requestedConnectionEpoch,
+        requestedConfigId
+      )
       grantCoverUriPermissions(cached, callerPackage)
       result.sendResult(cached)
       return
@@ -3494,7 +4092,8 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
         val safeItems = try {
           val boundedItems = browseResultTree.replaceChildren(SEARCH_RESULTS_ROOT, items)
           prefetchCoversAndNotify(AUTO_MEDIA_ROOT, boundedItems)
-          BrowseArtworkPolicy.sanitize(boundedItems)
+          val actionableItems = withOfflineBrowseActions(boundedItems, callerPackage)
+          BrowseArtworkPolicy.sanitize(actionableItems)
         } catch (error: Exception) {
           Log.e(tag, "onSearch result processing failed (${error.javaClass.simpleName})")
           mutableListOf()
@@ -3503,6 +4102,13 @@ class PlayerNotificationService : MediaBrowserServiceCompat() {
           cachedSearch = query
           cachedSearchResults = safeItems.toMutableList()
         }
+        rememberBrowseItems(
+          SEARCH_RESULTS_ROOT,
+          safeItems,
+          callerPackage,
+          requestedConnectionEpoch,
+          requestedConfigId
+        )
         grantCoverUriPermissions(safeItems, callerPackage)
         result.sendResult(safeItems)
         Log.d(tag, "onSearch: Done (${safeItems.size} results)")
