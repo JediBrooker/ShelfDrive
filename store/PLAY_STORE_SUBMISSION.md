@@ -13,7 +13,7 @@ must be completed in the correct Play Console listing before submission:
   `com.jedibrooker.shelfdrive` package.
 - [ ] Keep the public privacy policy available without sign-in at
   `https://jedibrooker.github.io/ShelfDrive/PRIVACY_POLICY` and verify the
-  published page contains the 28 August 2026 policy naming JediBkApps.
+  published page contains the 7 October 2026 policy naming Christian Brooker.
 - [ ] Provision a public HTTPS Audiobookshelf reviewer account with no MFA,
   VPN, invitation, IP allowlist, or location restriction and at least one
   rights-cleared downloadable audiobook.

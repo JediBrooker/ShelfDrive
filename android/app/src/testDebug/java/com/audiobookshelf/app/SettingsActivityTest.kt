@@ -224,7 +224,7 @@ class SettingsActivityTest {
     assertFalse(downloadCurrent.isEnabled)
     assertTrue(downloadCurrent.layoutParams.height >= minimumTarget)
     assertTrue(offlineHelp.text.toString().contains("Start an audiobook"))
-    assertTrue(privacy.text.toString().contains("JediBkApps"))
+    assertTrue(privacy.text.toString().contains("Christian Brooker"))
     assertTrue(privacy.text.toString().contains("christianbrooker@gmail.com"))
   }
 

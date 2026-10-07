@@ -1,8 +1,8 @@
 # ShelfDrive Privacy Policy
 
-_Last updated: 2026-08-28_
+_Last updated: 2026-10-07_
 
-ShelfDrive is an independent, open-source client for self-hosted [Audiobookshelf](https://audiobookshelf.org) servers. It is published by JediBkApps, operated by Christian Brooker, as a free, GPLv3-licensed app for Android Automotive OS.
+ShelfDrive is an independent, open-source client for self-hosted [Audiobookshelf](https://audiobookshelf.org) servers. It is published by Christian Brooker (formerly listed as JediBkApps) as a free, GPLv3-licensed app for Android Automotive OS.
 
 This policy explains what data ShelfDrive handles, where it goes, and how you can delete it.
 
