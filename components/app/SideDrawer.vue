@@ -29,6 +29,7 @@
         </div>
         <div class="flex items-center">
           <p class="text-xs">{{ $config.version }}</p>
+          <p class="text-xs text-fg-muted pl-2 flex items-center">· {{ $strings.LabelMadeInAustralia }}<widgets-flag-au class="ml-1.5" /></p>
           <div class="flex-grow" />
           <div v-if="user" class="flex items-center" @click="disconnect">
             <p class="text-xs pr-2">{{ $strings.ButtonDisconnect }}</p>
