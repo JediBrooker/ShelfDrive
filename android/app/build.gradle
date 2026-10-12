@@ -90,7 +90,7 @@ android {
     minSdkVersion rootProject.ext.minSdkVersion
     targetSdkVersion rootProject.ext.targetSdkVersion
     // Version 129 was rejected by Play; v131 adds release-safe AAOS offline downloads.
-    versionCode 131
+    versionCode 132
     versionName "0.1"
     testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     manifestPlaceholders = [
