@@ -30,11 +30,27 @@ why this is a Play Console targeting problem rather than a code defect.
 
 ## Checks that require the Play Console account owner
 
-- [ ] **Policy → App content → Target audience and content**: select only
+- [x] **Policy → App content → Target audience and content**: select only
   **18 and over**. Any under-18 group routes the app to Families review. Do
-  not opt into Designed for Families or Teacher Approved.
-- [ ] **Release → Setup → Advanced settings → Form factors**: Android
-  Automotive OS enabled; phone, tablet, Wear OS and Android TV disabled.
+  not opt into Designed for Families or Teacher Approved. **Done on
+  2026-10-21: the declaration had 6-8, 9-12, 13-15, 16-17 and 18+ all
+  selected and stated the Families policy applied; it is now 18 and over
+  only, with the optional "restrict minors" setting left off.**
+- [x] **Release tracks**: confirmed via the Play Developer API on 2026-10-21
+  that version code 132 was released on `automotive:production` and the
+  phone `production` track is empty. The phone `alpha` track holds an empty
+  draft release (no version codes) that can be deleted in Console.
+- [x] **Data safety**: completed on 2026-10-21 per the table in
+  `PLAY_STORE_SUBMISSION.md`. The pending draft had declared "No data
+  collected". Now: User IDs (required; app functionality, account
+  management), App interactions (required; app functionality), In-app search
+  history (optional; app functionality), Other actions (required; app
+  functionality, personalisation), Device or other IDs (required; app
+  functionality); none ephemeral; nothing marked as shared with third
+  parties; encrypted in transit; no in-app account creation; sign-in with
+  accounts created by the user's Audiobookshelf server administrator; the
+  optional deletion-request question was left unanswered. The privacy policy
+  URL in Console is still the GitHub blob link, not the GitHub Pages page.
 - [x] Add the compatibility notes Google asked for to the store description:
   Android Automotive OS only; Android 9 (API 28) or newer; no companion app;
   a self-hosted Audiobookshelf server and account are required. **Done on
@@ -46,7 +62,18 @@ why this is a Play Console targeting problem rather than a code defect.
   **App access**.
 - [ ] Upload only the verified version-code-132 app bundle to an internal AAOS
   track, install the Play-delivered build on an Android Automotive OS
-  emulator, and check its Pre-launch report before resubmitting.
+  emulator, and check its Pre-launch report before resubmitting. **Not done;
+  the existing 132 bundle was resubmitted as-is.**
+
+## Submission record
+
+On 2026-10-21 (AEDT) four changes were sent for review from Publishing
+overview, after Play's quick checks passed: the Production (Android
+Automotive OS) release 0.1 / version code 132 (full rollout), the en-AU full
+description change, the target audience change to 18 and over, and the
+completed Data safety questionnaire. The submission dialog offered no notes
+field, so the reviewer response below was not sent; keep it for an appeal if
+needed. Console showed "Changes in review" afterwards.
 
 ## Response to the version-code-132 installation rejection
 
