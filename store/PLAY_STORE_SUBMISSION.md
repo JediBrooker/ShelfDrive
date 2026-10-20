@@ -4,6 +4,12 @@ This checklist is for package `com.jedibk.shelfdrive`, version code **131**,
 target SDK 35. Do not reuse the v129 or v130 artifact, hashes, screenshots, or
 verification claims.
 
+> **v132 update:** version code 132 was rejected for "App installation" under
+> the Families Policy Requirements. The diagnosis, the Play Console target
+> audience / form factor fixes, the reviewer response and the v132 evidence
+> record are in `PLAY_REVIEW_RESPONSE_V132.md`. The release gate below is
+> unchanged for v132.
+
 ## External submission blockers
 
 The repository and release artifact can be completed locally, but these items
