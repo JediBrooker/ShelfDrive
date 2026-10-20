@@ -52,6 +52,14 @@ ShelfDrive
 > • Source code is available under the GPLv3 licence at
 >   github.com/JediBrooker/ShelfDrive
 >
+> Compatibility
+>
+> • Android Automotive OS only (the operating system built into the vehicle)
+> • Android 9 (API 28) or newer
+> • Not available for phones, tablets, Android Auto, TV or Wear OS
+> • No companion app required; a self-hosted Audiobookshelf server and
+>   account are required
+>
 > Audiobookshelf server required
 >
 > ShelfDrive does not include or host audiobooks, podcasts, or other media. You

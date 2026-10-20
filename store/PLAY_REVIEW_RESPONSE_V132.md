@@ -35,9 +35,12 @@ why this is a Play Console targeting problem rather than a code defect.
   not opt into Designed for Families or Teacher Approved.
 - [ ] **Release → Setup → Advanced settings → Form factors**: Android
   Automotive OS enabled; phone, tablet, Wear OS and Android TV disabled.
-- [ ] Add the compatibility notes Google asked for to the store description:
+- [x] Add the compatibility notes Google asked for to the store description:
   Android Automotive OS only; Android 9 (API 28) or newer; no companion app;
-  a self-hosted Audiobookshelf server and account are required.
+  a self-hosted Audiobookshelf server and account are required. **Done on
+  2026-10-21 via the Play Developer API (en-AU full description, committed
+  with changes not sent for review); it goes to review with the next
+  submission.**
 - [ ] Keep the public HTTPS Audiobookshelf reviewer server, credentials and
   exact navigation steps from `PLAY_REVIEW_RESPONSE_V131.md` current in
   **App access**.
